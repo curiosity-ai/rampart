@@ -9,13 +9,13 @@ using Rampart.Tokenization;
 namespace Rampart.Ner;
 
 /// <summary>A contextual PII detector: text in, spans over that text out.</summary>
-public interface INerDetector
+internal interface INerDetector
 {
     IReadOnlyList<PiiSpan> Detect(string text);
 }
 
 /// <summary>An <see cref="INerDetector"/> backed by a delegate — for another detector, or a test double.</summary>
-public sealed class DelegateNerDetector(Func<string, IReadOnlyList<PiiSpan>> detect) : INerDetector
+internal sealed class DelegateNerDetector(Func<string, IReadOnlyList<PiiSpan>> detect) : INerDetector
 {
     public IReadOnlyList<PiiSpan> Detect(string text) => detect(text);
 }
@@ -41,7 +41,7 @@ internal readonly record struct NerRow(string? Entity, string? Group, double Sco
 /// </para>
 /// <para>Thread-safe: holds no per-call state.</para>
 /// </summary>
-public sealed class NerDetector : INerDetector
+internal sealed class NerDetector : INerDetector
 {
     /// <summary>The model's hard context window.</summary>
     public const int ModelMaxTokens = 512;

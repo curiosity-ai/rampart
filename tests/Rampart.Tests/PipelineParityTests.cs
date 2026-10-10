@@ -120,6 +120,43 @@ public sealed class PipelineParityTests
         }
     }
 
+    /// <summary>
+    /// The public flow, analyze then cloak, sends the service exactly what the reference's
+    /// <c>guard.protect</c> produces.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(Cases))]
+    public async Task AnalyzeThenCloak(string id)
+    {
+        if (KnownDivergences.Contains(id)) return;
+        var c = ReferenceFixture.Case(id);
+        var text = c.GetProperty("text").GetString()!;
+        string? sent = null;
+        await new RampartCloaker().CloakAsync(text, Analyzer.Analyze(text), cloaked => Task.FromResult(sent = cloaked));
+        Assert.Equal(c.GetProperty("protected").GetProperty("text").GetString(), sent);
+    }
+
+    [Fact]
+    public async Task AnalyzeThenCloakAcrossTurns()
+    {
+        foreach (var conv in ReferenceFixture.Root.GetProperty("conversations").EnumerateArray())
+        {
+            var cloaker = new RampartCloaker();
+            foreach (var turn in conv.GetProperty("turns").EnumerateArray())
+            {
+                var user = turn.GetProperty("user").GetString()!;
+                string? sent = null;
+                var answer = await cloaker.CloakAsync(user, Analyzer.Analyze(user), cloaked =>
+                {
+                    sent = cloaked;
+                    return Task.FromResult(turn.GetProperty("reply").GetString()!);
+                });
+                Assert.Equal(turn.GetProperty("protected").GetProperty("text").GetString(), sent);
+                Assert.Equal(turn.GetProperty("revealed").GetString(), answer);
+            }
+        }
+    }
+
     [Fact]
     public void AstralCharactersDoNotShiftOffsets()
     {

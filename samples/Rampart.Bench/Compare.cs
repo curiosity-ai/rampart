@@ -133,7 +133,8 @@ internal static class Compare
             if ((onlySingle && model == multi) || (onlyMulti && model == single)) continue;
             var analyzer = new RampartAnalyzer(new RampartOptions { Model = model });
             Thread.Sleep(Gap);
-            Console.WriteLine($"    ChatGuard.Protect, {name,-10} {Median(() => new ChatGuard(analyzer).Protect(message)),7:F2} ms");
+            // What a call to RampartCloaker.CloakAsync sends: analyze, then swap in the placeholders.
+            Console.WriteLine($"    Analyze + cloak, {name,-10} {Median(() => new RampartCloaker().Cloak(message, analyzer.Analyze(message))),7:F2} ms");
         }
         var load = Stopwatch.StartNew();
         GC.KeepAlive(RampartModel.Load());

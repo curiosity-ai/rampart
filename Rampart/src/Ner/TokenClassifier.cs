@@ -16,7 +16,7 @@ namespace Rampart.Ner;
 /// into the classified text, used as they are.</item>
 /// </list>
 /// </summary>
-public sealed record TokenEntity
+internal sealed record TokenEntity
 {
     /// <summary>The BIO label of a raw token row (<c>B-GIVEN_NAME</c>).</summary>
     public string? Entity { get; init; }
@@ -44,7 +44,7 @@ public sealed record TokenEntity
 /// The contract <see cref="NerDetector"/> runs a classifier through — the reference's
 /// <c>TokenClassifier</c>: a call returning rows, plus an optional tokenizer.
 /// </summary>
-public interface ITokenClassifier
+internal interface ITokenClassifier
 {
     /// <summary>Classify <paramref name="text"/>; returns the non-<c>O</c> rows in order.</summary>
     IReadOnlyList<TokenEntity> Classify(string text);
@@ -63,7 +63,7 @@ public interface ITokenClassifier
 }
 
 /// <summary>An <see cref="ITokenClassifier"/> made of delegates — for another model, or a test double.</summary>
-public sealed class DelegateTokenClassifier(
+internal sealed class DelegateTokenClassifier(
     Func<string, IReadOnlyList<TokenEntity>> classify,
     Func<string, int>? countTokens = null,
     Func<string, IReadOnlyList<string>>? tokenize = null) : ITokenClassifier
@@ -81,7 +81,7 @@ public sealed class DelegateTokenClassifier(
 /// runs, including its details — the first maximum wins a tie, special tokens (<c>[UNK]</c> included)
 /// are skipped, and the softmax is evaluated in float32 like the typed array it runs on there.
 /// </summary>
-public sealed class TokenClassifier(RampartModel model) : ITokenClassifier
+internal sealed class TokenClassifier(RampartModel model) : ITokenClassifier
 {
     public RampartModel Model { get; } = model;
 

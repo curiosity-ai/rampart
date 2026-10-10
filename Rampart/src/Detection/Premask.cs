@@ -6,7 +6,7 @@ namespace Rampart.Detection;
 /// <param name="Masked">Input with heuristic spans replaced by sentinel tokens.</param>
 /// <param name="RawStart"><c>RawStart[i]</c> is the raw offset of the source of <c>Masked[i]</c>.</param>
 /// <param name="RawEnd"><c>RawEnd[i]</c> is the raw offset just past that source.</param>
-public sealed record PremaskResult(string Masked, int[] RawStart, int[] RawEnd);
+internal sealed record PremaskResult(string Masked, int[] RawStart, int[] RawEnd);
 
 /// <summary>
 /// Pre-mask harness: substitute deterministically detected structured PII with neutral sentinels
@@ -15,7 +15,7 @@ public sealed record PremaskResult(string Masked, int[] RawStart, int[] RawEnd);
 /// The heuristic spans themselves keep their raw offsets: only the text handed to the model is
 /// masked, never the text that gets placeholdered.
 /// </summary>
-public static class Premask
+internal static class Premask
 {
     /// <summary>The sentinel substituted for a premasked label. Stable across train/serve.</summary>
     public static string SentinelFor(PiiLabel label) => Sentinels[(int)label];

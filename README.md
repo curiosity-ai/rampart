@@ -1,10 +1,12 @@
 # Rampart for .NET
 
-On-device PII detection and reversible redaction for .NET 10 — a native C# port of
+On-device PII detection, anonymization and reversible cloaking for .NET 10, with the same flow as
+[Catalyst.Presidio](https://github.com/curiosity-ai/catalyst/tree/master/Catalyst.Presidio)
+(analyzer → anonymizer / cloaker). Behind the analyzer is a native C# port of
 [National Design Studio's Rampart](https://github.com/nationaldesignstudio/rampart)
-([model](https://huggingface.co/nationaldesignstudio/rampart)): the
-deterministic recognizers, the 4-bit MiniLM token classifier and the default-deny placeholder
-policy, with the published model embedded in the assembly.
+([model](https://huggingface.co/nationaldesignstudio/rampart)): the deterministic recognizers, the
+4-bit MiniLM token classifier and the default-deny policy, with the published model embedded in the
+assembly.
 
 No ONNX Runtime, no Python, no network: the encoder is evaluated directly from the published
 `model_q4.onnx` weights with SIMD kernels, and every stage is checked against the original —
@@ -13,39 +15,39 @@ layer by layer against ONNX Runtime, and end to end against the original JavaScr
 ```csharp
 using Rampart;
 
-var guard = new ChatGuard();                     // one per conversation
+var analyzer = new RampartAnalyzer();     // thread-safe, share one
+var text = "My name is Alex Rivera and my SSN is 472-81-0094.";
+var results = analyzer.Analyze(text);     // List<RecognizerResult>: GIVEN_NAME, SURNAME, SSN
 
-var safe = guard.Protect("My name is Alex Rivera and my SSN is 472-81-0094.");
-// safe.Text         → "My name is [GIVEN_NAME_1] [SURNAME_1] and my SSN is [SSN_1]."
-// safe.Placeholders → [GIVEN_NAME_1], [SURNAME_1], [SSN_1]
+new RampartAnonymizer().Anonymize(text, results);
+// → "My name is **** ****** and my SSN is ***********."
 
-var reply = await llm.CompleteAsync(safe.Text);  // the provider never sees the real values
-Console.WriteLine(guard.Reveal(reply));          // "[GIVEN_NAME_1]" → "Alex"
-
-await foreach (var chunk in guard.RevealAsync(llm.StreamAsync(safe.Text)))
-    Console.Write(chunk);                        // placeholders split across chunks are handled
+var cloaker = new RampartCloaker();       // one per conversation
+var answer = await cloaker.CloakAsync(text, results, cloaked => CallServiceAsync(cloaked));
+// the service sees "My name is [GIVEN_NAME_1] [SURNAME_1] and my SSN is [SSN_1]."
+// and its answer comes back with the real values restored
 ```
 
 ```
 dotnet add package Rampart
 ```
 
-[`Rampart/README.md`](Rampart/README.md) is the package's own readme, also shown on NuGet. It has
-samples for `IChatClient` round trips, streaming, multi-turn conversations, detection, log redaction,
-policy, other languages and ASP.NET Core.
+[`Rampart/README.md`](Rampart/README.md) is the package's own readme, also shown on NuGet: the
+analyzer, the anonymizer's operators, the cloaker (including streaming), options, entity types and
+limitations, with samples.
 
 ## What it does
 
 ```
-user message
+ analyzer
   → heuristics      SSN (structural rules), credit card (Luhn), email, URL, IPv4/IPv6/MAC
   → premask         structured spans become sentinels ([SSN], [EMAIL], …) before the model sees the text
   → classifier      MiniLM-L6-H384, 35 BIO labels: names, phone, IDs, address parts, …
   → repair          bridge low-confidence fragments, join name connectors, rescue particles (De La Croix)
-  → merge + policy  disjoint spans; default-deny: everything is redacted except CITY, STATE, ZIP_CODE
-  → session table   stable typed placeholders, the same value → the same token on every turn
-assistant reply
-  → rehydrate       placeholders back to the real values, also for streamed replies
+  → merge + policy  disjoint results; default-deny: everything is reported except CITY, STATE, ZIP_CODE
+ anonymizer         mask / replace / redact / hash, one way
+ cloaker            stable typed placeholders (the same value → the same token on every call) around
+                    the service call; its answer comes back with the real values, also when streamed
 ```
 
 | Layer | Labels |
@@ -62,52 +64,28 @@ can evade detection. Rampart is harm reduction, not a security boundary.
 
 ## API
 
-| Type | Purpose |
-|---|---|
-| `ChatGuard` | Per-conversation filter: `Protect`, `Reveal`, `RevealAsync`, `CreateStreamingReveal`, `ProtectReply`. Not thread-safe; create one per conversation (cheap — share a `RampartAnalyzer`). |
-| `RampartAnalyzer` | Stateless, thread-safe detection: `Detect` (raw spans from both layers) and `Analyze` (merged, kept labels included). |
-| `Redactor` | One-way redaction for logs and traces: label tag, mask, remove or SHA-256. |
-| `RampartOptions` | `KeepLabels`, `Aliases` (e.g. `GIVEN_NAME → NAME`), `MinScore` (0.4), `HeuristicsOnly`, a custom `Ner` detector, a custom `Model`. |
-| `RampartModel` | The encoder. `RampartModel.Default` is the embedded model, loaded once and shared; `ComputeLogits(ids)` for raw access; `LoadFromDirectory` for a local copy of the Hugging Face repo. |
-| `WordPieceTokenizer`, `TokenClassifier`, `NerDetector`, `Heuristics`, `Policy`, `Premask`, `SessionEntityTable`, `StreamingReveal` | The individual stages, public so each can be used or replaced on its own. |
-| `ITokenClassifier` / `DelegateTokenClassifier`, `INerDetector` / `DelegateNerDetector` | The reference's plug points: run `NerDetector`'s windowing and span repair over another classifier (raw BIO rows or aggregated `entity_group` rows, optional tokenizer), or give the guard a different detector. |
-
-```csharp
-// Detection only, e.g. for an audit log or a Presidio-style analyzer.
-var analyzer = new RampartAnalyzer();
-var text = "You can reach Maria Lopez at (415) 555-0132, she lives in Boston.";
-foreach (var span in analyzer.Analyze(text))
-    Console.WriteLine($"{span.Label.ToName(),-12} {span.Score:0.00} \"{span.Text}\" [{span.Start}, {span.End})");
-// GIVEN_NAME   0.98 "Maria" [14, 19)
-// SURNAME      0.97 "Lopez" [20, 25)
-// PHONE        1.00 "(415) 555-0132" [29, 43)
-// CITY         0.98 "Boston" [58, 64)
-
-// One-way redaction.
-analyzer.Redact(text);                      // "You can reach [GIVEN_NAME] [SURNAME] at [PHONE], she lives in Boston."
-analyzer.Redact(text, RedactionMode.Mask);  // "You can reach ***** ***** at **************, she lives in Boston."
-
-// Policy: keep nothing, and collapse name parts into one alias.
-var strict = new ChatGuard(new RampartOptions
-{
-    KeepLabels = [],
-    Aliases = new Dictionary<PiiLabel, string> { [PiiLabel.GivenName] = "NAME", [PiiLabel.Surname] = "NAME" },
-});
-```
-
-Offsets in `PiiSpan` are UTF-16 code units, `Start` inclusive and `End` exclusive.
-
-### Relation to Catalyst.Presidio
-
-[Catalyst.Presidio](https://github.com/curiosity-ai/catalyst/tree/master/Catalyst.Presidio) is a
-pattern-based analyzer / anonymizer / cloaker built on Catalyst's tokenizer and spotters. This
-library plays the same three roles with a learned model behind them and no dependency on Catalyst:
+The public surface is the Catalyst.Presidio flow and nothing else:
 
 | Catalyst.Presidio | Rampart |
 |---|---|
-| `PresidioAnalyzer.Analyze` → `RecognizerResult` | `RampartAnalyzer.Analyze` → `PiiSpan` (end exclusive) |
-| `PresidioAnonymizer.Anonymize` (mask / replace / redact / hash) | `Redactor.Redact` (`Mask` / `Label` / `Remove` / `Hash`) |
-| `PresidioCloaker.CloakAsync` (pseudonyms + rehydration, streaming) | `ChatGuard.Protect` / `Reveal` / `RevealAsync` |
+| `PresidioAnalyzer.Analyze(text)` → `List<RecognizerResult>` | `RampartAnalyzer.Analyze(text)` → `List<RecognizerResult>` |
+| `RecognizerResult` (`Start`, `End` inclusive, `EntityType`, `Score`, `Length`) | `RecognizerResult`, the same shape |
+| `PresidioAnonymizer.Anonymize(text, results, "mask" / "replace" / "redact" / "hash", maskChar, replacement)` | `RampartAnonymizer.Anonymize`, the same signature and operators |
+| `PresidioCloaker.CloakAsync(document, results, Func<string, Task<string>>)` and its streaming overload | `RampartCloaker.CloakAsync(text, results, …)`, both overloads |
+| `PresidioAnalyzer.For(language).AddAllRecognizers()` | `new RampartAnalyzer(options)`: one multilingual model; `RampartOptions` sets `KeepLabels`, `MinScore` and the `Model` (`RampartModel.Default`, `Load(options)`, `LoadFromDirectory`) |
+
+Differences worth knowing:
+- **Recognizers.** The analyzer runs fixed deterministic recognizers plus the model; there are no
+  per-recognizer `Add…` calls.
+- **Placeholders.** The cloaker's placeholders are bracketed (`[GIVEN_NAME_1]`) and numbered per
+  entity type, as in the original Rampart.
+- **Merging.** Overlapping results are merged rather than dropped.
+- **Errors.** A result the cloaker cannot place (an unknown entity type, or offsets outside the text)
+  throws instead of being skipped, so it never sends text with an entity left in.
+
+The pipeline stages (tokenizer, classifier, NER windowing and repair, heuristics, premask, policy,
+session table, streaming reveal, and the reference's `ChatGuard`) are internal. They mirror the
+original's modules one to one and are what the parity tests exercise.
 
 ## How the model runs
 
@@ -153,7 +131,7 @@ optimization on the same model. All four engines ran in one process, interleaved
 
 Short inputs are ~25% faster than ORT. From 128 tokens up, one thread is at parity (±8%, within the
 VM's run-to-run noise), and four threads are faster at every length but 256.
-`ChatGuard.Protect` on the chat message, everything included, takes ~4.5 ms (~10.7 ms on one thread).
+Analyzing and cloaking the chat message, everything included, takes ~4.6 ms (~10.5 ms on one thread).
 Loading the embedded model takes 0.3–0.5 s. Inputs longer than one window are scanned in overlapping
 500-token windows.
 
@@ -164,10 +142,11 @@ are cached, so after warm-up (bytes per call, all threads, `--alloc`):
 
 | Call | Allocated |
 |---|---|
-| `RampartModel.ComputeLogits(ids, Span<float> logits)` — any length, 1 or 4 threads | 0 B |
-| `WordPieceTokenizer.CountTokens` | 0 B |
-| `RampartAnalyzer.Detect` (chat message) | ~0.7 KB — the returned spans, their text and the list |
-| `ChatGuard.Protect` (chat message) | ~1.2 KB — the above plus the scrubbed string and placeholders |
+| The model's forward pass (`ComputeLogits` into a span), any length, 1 or 4 threads | 0 B |
+| Tokenizer token count | 0 B |
+| Detection, both layers (chat message) | ~0.7 KB: the detected spans, their text and the list |
+| `RampartAnalyzer.Analyze` (chat message) | ~1.3 KB: the above, merged, plus the result list |
+| `Analyze` + cloaking, with a new `RampartCloaker` (chat message) | ~4.7 KB: the above plus the cloaker's tables, the cloaked string and its placeholders |
 
 ## Validation
 

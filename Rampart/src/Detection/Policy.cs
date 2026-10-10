@@ -7,7 +7,7 @@ namespace Rampart.Detection;
 /// possibly conflicting spans; <see cref="MergeSpans"/> resolves them into a disjoint set and
 /// <see cref="ApplyPolicy"/> drops anything in the keep-set so only redactable spans remain.
 /// </summary>
-public static class Policy
+internal static class Policy
 {
     /// <summary>
     /// Reduce overlapping spans to a disjoint set. When two spans overlap the higher-confidence one

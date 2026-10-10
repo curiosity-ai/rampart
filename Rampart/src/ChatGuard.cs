@@ -3,22 +3,12 @@ using Rampart.Session;
 namespace Rampart;
 
 /// <summary>
-/// Per-conversation PII filter for a chat app.
-/// <code>
-/// var guard = new ChatGuard();
-/// var safe = guard.Protect(userInput);          // "My name is [GIVEN_NAME_1] [SURNAME_1] …"
-/// var reply = await llm(safe.Text);
-/// Console.WriteLine(guard.Reveal(reply));       // placeholders back to real values
-/// await foreach (var chunk in guard.RevealAsync(streamedReply)) …   // streaming
-/// </code>
-/// user message → heuristics (structured PII) → classifier (contextual PII) → merge + default-deny
-/// policy (keep city/state/ZIP) → stable placeholders; assistant reply → rehydrate.
-/// <para>
-/// The entity table lives only in this object and keeps placeholder identity stable across every
-/// turn. Not thread-safe: use one guard per conversation (the model underneath is shared).
-/// </para>
+/// The reference's <c>ChatGuard</c> (upstream <c>src/guard.ts</c>), kept internal: detection, the
+/// default-deny policy and the session table in one object, as the ported upstream tests and the
+/// parity tests drive it. The public API is <see cref="RampartAnalyzer"/>, <see cref="RampartAnonymizer"/>
+/// and <see cref="RampartCloaker"/>. Not thread-safe.
 /// </summary>
-public sealed class ChatGuard
+internal sealed class ChatGuard
 {
     private readonly RampartAnalyzer _analyzer;
 

@@ -47,16 +47,16 @@ public sealed class RampartModel
     private readonly int _parallelism;
 
     /// <summary>The encoder configuration (from the shipped <c>config.json</c>).</summary>
-    public RampartConfig Config => _weights.Config;
+    internal RampartConfig Config => _weights.Config;
 
     /// <summary>The WordPiece tokenizer that matches this model's vocabulary.</summary>
-    public WordPieceTokenizer Tokenizer { get; }
+    internal WordPieceTokenizer Tokenizer { get; }
 
     /// <summary>BIO labels by class index.</summary>
-    public IReadOnlyList<string> Labels => _weights.Config.Labels;
+    internal IReadOnlyList<string> Labels => _weights.Config.Labels;
 
     /// <summary>Maximum sequence length, including <c>[CLS]</c> and <c>[SEP]</c>.</summary>
-    public int MaxSequenceLength => _weights.Config.MaxPositionEmbeddings;
+    internal int MaxSequenceLength => _weights.Config.MaxPositionEmbeddings;
 
     private RampartModel(RampartWeights weights, WordPieceTokenizer tokenizer, int parallelism)
     {
@@ -76,7 +76,7 @@ public sealed class RampartModel
     }
 
     /// <summary>Loads a Rampart-compatible model from the three published files.</summary>
-    public static RampartModel Load(ReadOnlySpan<byte> onnxModel, ReadOnlySpan<byte> vocabTxt, ReadOnlySpan<byte> configJson, RampartModelOptions? options = null)
+    internal static RampartModel Load(ReadOnlySpan<byte> onnxModel, ReadOnlySpan<byte> vocabTxt, ReadOnlySpan<byte> configJson, RampartModelOptions? options = null)
     {
         var config = RampartConfig.Parse(configJson);
         var onnx = OnnxModel.Parse(onnxModel);
@@ -105,14 +105,14 @@ public sealed class RampartModel
     /// Runs the encoder over one unpadded sequence of token ids (already wrapped in <c>[CLS]</c> …
     /// <c>[SEP]</c>) and returns row-major logits of shape <c>[ids.Length, Labels.Count]</c>.
     /// </summary>
-    public float[] ComputeLogits(ReadOnlySpan<int> inputIds) => ComputeLogits(inputIds, trace: null);
+    internal float[] ComputeLogits(ReadOnlySpan<int> inputIds) => ComputeLogits(inputIds, trace: null);
 
     /// <summary>
     /// As <see cref="ComputeLogits(ReadOnlySpan{int})"/>, writing into <paramref name="logits"/>
     /// (at least <c>ids.Length × Labels.Count</c>): with every intermediate buffer pooled, the call
     /// allocates nothing.
     /// </summary>
-    public void ComputeLogits(ReadOnlySpan<int> inputIds, Span<float> logits) => ComputeLogits(inputIds, logits, trace: null);
+    internal void ComputeLogits(ReadOnlySpan<int> inputIds, Span<float> logits) => ComputeLogits(inputIds, logits, trace: null);
 
     internal float[] ComputeLogits(ReadOnlySpan<int> inputIds, IForwardTrace? trace)
     {
