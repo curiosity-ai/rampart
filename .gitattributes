@@ -1,0 +1,4 @@
+* text=auto
+*.onnx binary
+*.txt text eol=lf
+*.json text eol=lf
