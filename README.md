@@ -109,14 +109,21 @@ exported with 4-bit `MatMulNBits` linears (block 32, scale per block, zero point
 by graph structure — nothing is re-quantized or converted — and evaluates:
 
 - **Embeddings**: word + token type, then + position, exactly the graph's order; LayerNorm.
-- **Linears**: 4-bit weights unpacked with SIMD nibble shuffles into transposed float panels, then a
-  register-blocked GEMM (6×32 block on AVX-512, 4×16 on AVX2/NEON, FMA, no horizontal sums).
-  By default the panels are built once at load (~42 MB); `RampartModelOptions.KeepWeightsQuantized`
-  keeps ~5 MB of 4-bit weights and dequantizes per call instead, with identical results.
-- **Attention**: Q and K each scaled by `√(1/√64)` as in the graph; per (head, block of queries)
-  tasks that run scores, softmax and the weighted sum of V while the block is in cache.
-- **FFN**: exact-erf GELU (vectorized rational approximation, |error| < 5e-7).
+- **Linears**: the 4-bit weights stay 4-bit (~5 MB for the model, so they stay in the last-level
+  cache between calls). At load they are only *permuted* into panel order (bit-exact); each call
+  dequantizes one 32-column panel at a time with a few SIMD instructions and multiplies every token
+  against it with a register-blocked GEMM (12×32 block in 24 zmm accumulators on AVX-512, 6×16 on
+  AVX2/NEON; broadcast-FMA, no horizontal sums).
+- **Attention**: Q and K each scaled by `√(1/√32)` as in the graph; Kᵀ and V packed per head; each
+  (head, block of queries) task runs scores, softmax and the weighted sum of V in an L2-sized
+  scratch buffer, so the `[heads, T, T]` probabilities never go to memory.
+- **FFN**: exact-erf GELU (vectorized rational approximation, |error| < 5e-7); residual adds fused
+  into the LayerNorms; softmax with a fast vectorized `exp` (< 2.5e-7 relative error).
 - **Classifier**: argmax over 35 labels, scores from a float32 softmax as transformers.js computes it.
+- **Threads**: a dedicated pool of `cores − 1` workers that spin briefly between the ~40 parallel
+  regions of a pass, so short inputs gain from parallelism too. `RampartModelOptions.MaxDegreeOfParallelism = 1`
+  runs everything on the calling thread (for servers that parallelize across requests); a call that
+  finds the pool busy with another inference runs inline rather than queueing.
 
 Tokenization reproduces the transformers.js tokenizer the reference runs (special-token splitting,
 `BertNormalizer` cleaning, CJK padding, lowercasing, NFD accent stripping, `BertPreTokenizer`,
@@ -124,17 +131,30 @@ greedy WordPiece with `##` continuations and the 100-character limit).
 
 ### Performance
 
-Median latency on a 4-core cloud Xeon (AVX-512), weights expanded, against ONNX Runtime 1.23 with
-full graph optimization on the same model (`samples/Rampart.Bench`):
+Median latency on a 4-core cloud Xeon (AVX-512) against ONNX Runtime 1.23 with full graph
+optimization on the same model (`samples/Rampart.Bench`; the VM is noisy, ±10% run to run):
 
-| Input | Rampart C# | ONNX Runtime |
-|---|---|---|
-| chat message (30 tokens) | ~10.5 ms | ~9.8 ms |
-| 128 tokens | ~35 ms | ~22 ms |
-| 512 tokens (one full window) | ~140 ms | ~91 ms |
+| Input | Rampart C#, 4 threads | ONNX Runtime, 4 threads (spinning pool) | Rampart C#, 1 thread | ONNX Runtime, 1 thread |
+|---|---|---|---|---|
+| chat message (30 tokens) | ~4.5 ms | ~6.0 ms | ~10.7 ms | ~12.4 ms |
+| 128 tokens | ~15 ms | ~18 ms | ~37 ms | ~41 ms |
+| 512 tokens (one full window) | ~66 ms | ~72 ms | ~187 ms | ~204 ms |
 
-`ChatGuard.Protect` on the chat message, everything included, takes ~13 ms. Loading the embedded
-model takes ~0.1–0.2 s. Inputs longer than one window are scanned in overlapping 500-token windows.
+`ChatGuard.Protect` on the chat message, everything included, takes ~6 ms (~12 ms on one thread).
+Loading the embedded model takes ~0.2 s. Inputs longer than one window are scanned in overlapping
+500-token windows.
+
+### Allocations
+
+Every buffer on the hot path comes from `ArrayPool<T>.Shared`, and the per-character Unicode folds
+are cached, so after warm-up (bytes per call, all threads, `--alloc`):
+
+| Call | Allocated |
+|---|---|
+| `RampartModel.ComputeLogits(ids, Span<float> logits)` — any length, 1 or 4 threads | 0 B |
+| `WordPieceTokenizer.CountTokens` | 0 B |
+| `RampartAnalyzer.Detect` (chat message) | ~0.7 KB — the returned spans, their text and the list |
+| `ChatGuard.Protect` (chat message) | ~1.2 KB — the above plus the scrubbed string and placeholders |
 
 ## Validation
 

@@ -22,15 +22,8 @@ internal static class Kernels
             fixed (float* pg = gamma)
             fixed (float* pb = beta)
             {
-                nint dp = (nint)pd, gp = (nint)pg, bp = (nint)pb;
-                int chunks = (rows + ParallelRows / 2 - 1) / (ParallelRows / 2);
-                Parallel.For(0, chunks, chunk =>
-                {
-                    int r0 = chunk * (ParallelRows / 2);
-                    int count = Math.Min(ParallelRows / 2, rows - r0);
-                    var slice = new Span<float>((void*)(dp + (nint)r0 * width * sizeof(float)), count * width);
-                    LayerNorm(slice, count, new ReadOnlySpan<float>((void*)gp, width), new ReadOnlySpan<float>((void*)bp, width), epsilon);
-                });
+                var job = new LayerNormJob((nint)pd, (nint)pg, (nint)pb, rows, width, epsilon);
+                Parallelism.For((rows + ParallelRows / 2 - 1) / (ParallelRows / 2), parallelism, ref job);
             }
             return;
         }
@@ -52,11 +45,24 @@ internal static class Kernels
     /// fused into the normalization, three passes over each row while it is in L1 (sum while adding,
     /// then Σ(x - mean)², then scale and shift) — the same two-pass variance as <see cref="LayerNorm"/>.
     /// </summary>
-    public static void AddLayerNorm(ReadOnlySpan<float> x, ReadOnlySpan<float> residual, Span<float> destination, int rows, ReadOnlySpan<float> gamma, ReadOnlySpan<float> beta, float epsilon)
+    public static unsafe void AddLayerNorm(ReadOnlySpan<float> x, ReadOnlySpan<float> residual, Span<float> destination, int rows, ReadOnlySpan<float> gamma, ReadOnlySpan<float> beta, float epsilon, int parallelism = 1)
     {
         int width = gamma.Length;
         if (x.Length < rows * width || residual.Length < rows * width || destination.Length < rows * width)
             throw new ArgumentException("LayerNorm operand is smaller than rows x width.");
+        if (parallelism > 1 && rows >= ParallelRows)
+        {
+            fixed (float* px = x)
+            fixed (float* pr = residual)
+            fixed (float* pd = destination)
+            fixed (float* pg = gamma)
+            fixed (float* pb = beta)
+            {
+                var job = new AddLayerNormJob((nint)px, (nint)pr, (nint)pd, (nint)pg, (nint)pb, rows, width, epsilon);
+                Parallelism.For((rows + ParallelRows / 2 - 1) / (ParallelRows / 2), parallelism, ref job);
+            }
+            return;
+        }
         if (width % 16 != 0 || !(Vector512.IsHardwareAccelerated || System.Runtime.Intrinsics.X86.Avx512F.IsSupported))
         {
             TensorPrimitives.Add(x[..(rows * width)], residual[..(rows * width)], destination);
@@ -104,18 +110,55 @@ internal static class Kernels
         {
             fixed (float* pd = data)
             {
-                nint dp = (nint)pd;
-                int length = data.Length;
-                int chunk = ParallelElements / 2;
-                Parallel.For(0, (length + chunk - 1) / chunk, c =>
-                {
-                    int start = c * chunk;
-                    GeluSerial(new Span<float>((void*)(dp + (nint)start * sizeof(float)), Math.Min(chunk, length - start)));
-                });
+                var job = new GeluJob((nint)pd, data.Length);
+                Parallelism.For((data.Length + ParallelElements / 2 - 1) / (ParallelElements / 2), parallelism, ref job);
             }
             return;
         }
         GeluSerial(data);
+    }
+
+    private readonly unsafe struct LayerNormJob(nint data, nint gamma, nint beta, int rows, int width, float epsilon) : IParallelJob
+    {
+        public void Run(int from, int to)
+        {
+            for (int chunk = from; chunk < to; chunk++)
+            {
+                int r0 = chunk * (ParallelRows / 2);
+                int count = Math.Min(ParallelRows / 2, rows - r0);
+                var slice = new Span<float>((void*)(data + (nint)r0 * width * sizeof(float)), count * width);
+                LayerNorm(slice, count, new ReadOnlySpan<float>((void*)gamma, width), new ReadOnlySpan<float>((void*)beta, width), epsilon);
+            }
+        }
+    }
+
+    private readonly unsafe struct AddLayerNormJob(nint x, nint residual, nint destination, nint gamma, nint beta, int rows, int width, float epsilon) : IParallelJob
+    {
+        public void Run(int from, int to)
+        {
+            for (int chunk = from; chunk < to; chunk++)
+            {
+                int r0 = chunk * (ParallelRows / 2);
+                int count = Math.Min(ParallelRows / 2, rows - r0);
+                nint at = (nint)r0 * width * sizeof(float);
+                int len = count * width;
+                AddLayerNorm(new ReadOnlySpan<float>((void*)(x + at), len), new ReadOnlySpan<float>((void*)(residual + at), len), new Span<float>((void*)(destination + at), len),
+                    count, new ReadOnlySpan<float>((void*)gamma, width), new ReadOnlySpan<float>((void*)beta, width), epsilon);
+            }
+        }
+    }
+
+    private readonly unsafe struct GeluJob(nint data, int length) : IParallelJob
+    {
+        public void Run(int from, int to)
+        {
+            const int chunk = ParallelElements / 2;
+            for (int c = from; c < to; c++)
+            {
+                int start = c * chunk;
+                GeluSerial(new Span<float>((void*)(data + (nint)start * sizeof(float)), Math.Min(chunk, length - start)));
+            }
+        }
     }
 
     /// <summary>Row counts / element counts above which the elementwise kernels split across cores.</summary>

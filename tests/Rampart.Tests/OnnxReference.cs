@@ -65,6 +65,17 @@ public sealed class OnnxReference : IDisposable
         return results.First(r => r.Name == "logits").AsTensor<float>().ToArray();
     }
 
+    /// <summary>Logits from the optimized graph with ORT's default thread pool, intra-op spinning on.</summary>
+    public float[] RunLogitsSpinning(int[] ids)
+    {
+        _spinning ??= new InferenceSession(RampartModel.ReadResource(typeof(RampartModel).Assembly, "Rampart.model_q4.onnx"),
+            new SessionOptions { GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL });
+        using var results = _spinning.Run(Inputs(ids));
+        return results.First(r => r.Name == "logits").AsTensor<float>().ToArray();
+    }
+
+    private InferenceSession? _spinning;
+
     /// <summary>Logits from the optimized graph on one thread (intra- and inter-op).</summary>
     public float[] RunLogitsSingleThread(int[] ids)
     {
@@ -141,5 +152,6 @@ public sealed class OnnxReference : IDisposable
         _literal.Dispose();
         _optimized.Dispose();
         _singleThread.Dispose();
+        _spinning?.Dispose();
     }
 }

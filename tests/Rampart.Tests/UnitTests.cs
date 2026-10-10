@@ -365,3 +365,73 @@ public sealed class ExpTests
         Assert.All(row, p => Assert.InRange(p, 0f, 1f));
     }
 }
+
+public sealed class HeuristicsScannerTests
+{
+    /// <summary>The hand-written scanners against the regular expressions they replace, on random text.</summary>
+    [Fact]
+    public void ScannersMatchTheirExpressions()
+    {
+        var random = new Random(7);
+        const string alphabet = "0123456789012345.....---   a_1225";
+        for (int trial = 0; trial < 20000; trial++)
+        {
+            var chars = new char[random.Next(0, 40)];
+            for (int i = 0; i < chars.Length; i++) chars[i] = alphabet[random.Next(alphabet.Length)];
+            var text = new string(chars);
+
+            var expected = Heuristics.DigitRun().Matches(text).Select(m => (m.Index, m.Length)).ToList();
+            var actual = new List<(int, int)>();
+            for (int at = 0; (at = Heuristics.NextDigitRun(text, at, out int length)) >= 0; at += length) actual.Add((at, length));
+            Assert.True(expected.SequenceEqual(actual), $"digit runs differ on \"{text}\"");
+
+            expected = Heuristics.Ipv4Rule().Matches(text).Select(m => (m.Index, m.Length)).ToList();
+            actual.Clear();
+            for (int at = 0; (at = Heuristics.NextIpv4(text, at, out int length)) >= 0; at += length) actual.Add((at, length));
+            Assert.True(expected.SequenceEqual(actual), $"IPv4 differs on \"{text}\"");
+        }
+    }
+}
+
+/// <summary>The hot paths allocate nothing once warm (see CLAUDE.md, "Performance and allocation notes").</summary>
+public sealed class AllocationTests
+{
+    private static readonly RampartModel SingleThreaded = RampartModel.Load(new RampartModelOptions { MaxDegreeOfParallelism = 1 });
+
+    private static long Measure(Action action)
+    {
+        for (int i = 0; i < 20; i++) action();
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        for (int i = 0; i < 20; i++) action();
+        return (GC.GetAllocatedBytesForCurrentThread() - before) / 20;
+    }
+
+    [Fact]
+    public void ComputeLogitsIntoASpanAllocatesNothing()
+    {
+        var model = SingleThreaded;
+        var ids = model.Tokenizer.Encode("My name is Alex Rivera and I live at 12 Main Street, Springfield.");
+        int[] longIds = [model.Tokenizer.ClsId, .. model.Tokenizer.Encode(Corpus.Long(), addSpecialTokens: false).AsSpan(0, 300), model.Tokenizer.SepId];
+        var logits = new float[512 * model.Labels.Count];
+        Assert.Equal(0, Measure(() => model.ComputeLogits(ids, logits)));
+        Assert.Equal(0, Measure(() => model.ComputeLogits(longIds, logits)));
+    }
+
+    [Fact]
+    public void CountingTokensAllocatesNothing()
+    {
+        var tokenizer = SingleThreaded.Tokenizer;
+        Assert.Equal(0, Measure(() => tokenizer.CountTokens("Hola, me llamo José Ángel García López; call (202) 555-0188 [SEP] ok.")));
+    }
+
+    [Fact]
+    public void DetectionAllocatesOnlyItsResults()
+    {
+        var analyzer = new RampartAnalyzer(new RampartOptions { Model = SingleThreaded });
+        const string text = "My name is Alex Rivera and I live at 12 Main Street, Springfield. Call me at (202) 555-0188.";
+        int spans = analyzer.Detect(text).Count;
+        // A list, and per span a record plus its text: a generous per-span bound, far below the
+        // tens of kilobytes intermediate buffers would cost.
+        Assert.InRange(Measure(() => analyzer.Detect(text)), 1, 128 + spans * 160);
+    }
+}

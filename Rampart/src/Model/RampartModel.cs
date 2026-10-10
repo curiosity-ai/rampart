@@ -107,14 +107,30 @@ public sealed class RampartModel
     /// </summary>
     public float[] ComputeLogits(ReadOnlySpan<int> inputIds) => ComputeLogits(inputIds, trace: null);
 
+    /// <summary>
+    /// As <see cref="ComputeLogits(ReadOnlySpan{int})"/>, writing into <paramref name="logits"/>
+    /// (at least <c>ids.Length × Labels.Count</c>): with every intermediate buffer pooled, the call
+    /// allocates nothing.
+    /// </summary>
+    public void ComputeLogits(ReadOnlySpan<int> inputIds, Span<float> logits) => ComputeLogits(inputIds, logits, trace: null);
+
     internal float[] ComputeLogits(ReadOnlySpan<int> inputIds, IForwardTrace? trace)
+    {
+        if (inputIds.IsEmpty) return [];
+        var logits = new float[inputIds.Length * _weights.Config.Labels.Count];
+        ComputeLogits(inputIds, logits, trace);
+        return logits;
+    }
+
+    internal void ComputeLogits(ReadOnlySpan<int> inputIds, Span<float> logits, IForwardTrace? trace)
     {
         var cfg = _weights.Config;
         int tokens = inputIds.Length;
         int hiddenSize = cfg.HiddenSize;
         int interSize = cfg.IntermediateSize;
         int labels = cfg.Labels.Count;
-        if (tokens == 0) return [];
+        if (tokens == 0) return;
+        if (logits.Length < tokens * labels) throw new ArgumentException("Logits buffer is smaller than tokens x labels.", nameof(logits));
         if (tokens > cfg.MaxPositionEmbeddings)
             throw new ArgumentException($"Sequence of {tokens} tokens exceeds the model maximum of {cfg.MaxPositionEmbeddings}.", nameof(inputIds));
 
@@ -165,7 +181,7 @@ public sealed class RampartModel
                 layer.AttentionOutput.Forward(ctx, tokens, d, _parallelism);
                 trace?.Record(OnnxNames.AttentionDense(l), d);
                 var a = attnOut.AsSpan(0, th);
-                Kernels.AddLayerNorm(d, h, a, tokens, layer.AttentionNorm.Gamma, layer.AttentionNorm.Beta, layer.AttentionNorm.Epsilon);
+                Kernels.AddLayerNorm(d, h, a, tokens, layer.AttentionNorm.Gamma, layer.AttentionNorm.Beta, layer.AttentionNorm.Epsilon, _parallelism);
                 trace?.Record(OnnxNames.AttentionNorm(l), a);
 
                 var i = inter.AsSpan(0, tokens * interSize);
@@ -185,14 +201,13 @@ public sealed class RampartModel
 
                 layer.Output.Forward(i, tokens, d, _parallelism);
                 trace?.Record(OnnxNames.OutputDense(l), d);
-                Kernels.AddLayerNorm(d, a, h, tokens, layer.OutputNorm.Gamma, layer.OutputNorm.Beta, layer.OutputNorm.Epsilon);
+                Kernels.AddLayerNorm(d, a, h, tokens, layer.OutputNorm.Gamma, layer.OutputNorm.Beta, layer.OutputNorm.Epsilon, _parallelism);
                 trace?.Record(OnnxNames.OutputNorm(l), h);
             }
 
-            var logits = new float[tokens * labels];
-            _weights.Classifier.Forward(h, tokens, logits, _parallelism);
-            trace?.Record(OnnxNames.Logits, logits);
-            return logits;
+            var output = logits[..(tokens * labels)];
+            _weights.Classifier.Forward(h, tokens, output, _parallelism);
+            trace?.Record(OnnxNames.Logits, output);
         }
         finally
         {
@@ -241,7 +256,6 @@ public sealed class RampartModel
         int width = cfg.HiddenSize;
         int headDim = width / heads;
         float scale = MathF.Sqrt(1f / MathF.Sqrt(headDim));
-        TensorPrimitives.Multiply(q, scale, q);
 
         // Per-head panels, packed once per layer and shared by every query block of the head:
         // kt[h] = (K_h · scale)ᵀ, headDim × tokens — the B operand of scores = Q_h · K_hᵀ;
@@ -251,17 +265,15 @@ public sealed class RampartModel
         var vh = ArrayPool<float>.Shared.Rent(heads * panel);
         try
         {
-            for (int j = 0; j < tokens; j++)
+            int degree = _parallelism <= 1 || (long)tokens * tokens * width < 200_000 ? 1 : _parallelism;
+            fixed (float* pq0 = q)
+            fixed (float* pk0 = k)
+            fixed (float* pv0 = v)
+            fixed (float* pkt = kt)
+            fixed (float* pvh = vh)
             {
-                var krow = k.Slice(j * width, width);
-                var vrow = v.Slice(j * width, width);
-                for (int h = 0; h < heads; h++)
-                {
-                    var src = krow.Slice(h * headDim, headDim);
-                    int dst = h * panel + j;
-                    for (int d = 0; d < headDim; d++) kt[dst + d * tokens] = src[d] * scale;
-                    vrow.Slice(h * headDim, headDim).CopyTo(vh.AsSpan(h * panel + j * headDim, headDim));
-                }
+                var pack = new PackJob((nint)pq0, (nint)pk0, (nint)pv0, (nint)pkt, (nint)pvh, tokens, width, headDim, scale);
+                Parallelism.For(heads, degree, ref pack);
             }
 
             int block = _parallelism <= 1 ? QueryBlockSerial : QueryBlockParallel;
@@ -273,7 +285,6 @@ public sealed class RampartModel
             fixed (float* pv = vh)
             {
                 var job = new AttentionJob((nint)pq, (nint)pk, (nint)pv, probs.IsEmpty ? 0 : (nint)pp, (nint)pc, tokens, width, headDim, block, rowBlocks);
-                int degree = _parallelism <= 1 || (long)tokens * tokens * width < 200_000 ? 1 : _parallelism;
                 Parallelism.For(heads * rowBlocks, degree, ref job);
             }
         }
@@ -287,6 +298,35 @@ public sealed class RampartModel
     /// <summary>Query rows per attention task (multiples of the GEMM's 12-row block): one core keeps a
     /// larger slice of probabilities in L2; several cores want more, smaller tasks.</summary>
     private const int QueryBlockSerial = 96, QueryBlockParallel = 48;
+
+    /// <summary>
+    /// One head's operand packing: Q_h scaled in place, (K_h · scale)ᵀ into its <c>headDim × tokens</c>
+    /// panel and V_h into its contiguous <c>tokens × headDim</c> panel. Heads touch disjoint memory.
+    /// </summary>
+    private readonly unsafe struct PackJob(nint q, nint k, nint v, nint kt, nint vh, int tokens, int width, int headDim, float scale) : IParallelJob
+    {
+        public void Run(int from, int to)
+        {
+            int panel = tokens * headDim;
+            var qs = new Span<float>((void*)q, tokens * width);
+            var ks = new ReadOnlySpan<float>((void*)k, tokens * width);
+            var vs = new ReadOnlySpan<float>((void*)v, tokens * width);
+            for (int h = from; h < to; h++)
+            {
+                var kth = new Span<float>((void*)(kt + (nint)h * panel * sizeof(float)), panel);
+                var vhh = new Span<float>((void*)(vh + (nint)h * panel * sizeof(float)), panel);
+                int off = h * headDim;
+                for (int j = 0; j < tokens; j++)
+                {
+                    var qrow = qs.Slice(j * width + off, headDim);
+                    TensorPrimitives.Multiply(qrow, scale, qrow);
+                    var krow = ks.Slice(j * width + off, headDim);
+                    for (int d = 0; d < headDim; d++) kth[d * tokens + j] = krow[d] * scale;
+                    vs.Slice(j * width + off, headDim).CopyTo(vhh.Slice(j * headDim, headDim));
+                }
+            }
+        }
+    }
 
     /// <summary>One (head, block of queries) of attention: scores, softmax, weighted sum of V.</summary>
     private readonly unsafe struct AttentionJob(nint q, nint kt, nint vh, nint probs, nint context, int tokens, int width, int headDim, int block, int rowBlocks) : IParallelJob

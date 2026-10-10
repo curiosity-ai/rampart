@@ -7,14 +7,27 @@ using Rampart.Tests;
 // Latency of the C# engine against ONNX Runtime (CPU, full graph optimization) on the same model,
 // plus the end-to-end guard.
 //
-//   dotnet run -c Release --project samples/Rampart.Bench               # latency table
-//   dotnet run -c Release --project samples/Rampart.Bench -- --profile  # time per encoder stage (512 tokens)
+//   dotnet run -c Release --project samples/Rampart.Bench                    # latency table, all cores
+//   dotnet run -c Release --project samples/Rampart.Bench -- --single        # both engines on one thread
+//   dotnet run -c Release --project samples/Rampart.Bench -- --ort-spinning  # ONNX Runtime alone, spinning pool
+//   dotnet run -c Release --project samples/Rampart.Bench -- --profile [--short] [--single]  # time per stage
+//   dotnet run -c Release --project samples/Rampart.Bench -- --alloc [--single]  # bytes allocated per call
+//   dotnet run -c Release --project samples/Rampart.Bench -- --alloc-parts   # bytes per kernel
+//   dotnet run -c Release --project samples/Rampart.Bench -- --gemm | --attention  # kernel throughput
 bool single = args.Contains("--single");
 var model = single ? RampartModel.Load(new RampartModelOptions { MaxDegreeOfParallelism = 1 }) : RampartModel.Default;
 var tokenizer = model.Tokenizer;
 const string message = "My name is Alex Rivera and I live at 12 Main Street, Springfield. Call me at (202) 555-0188.";
 var longIds = tokenizer.Encode(string.Join(" ", Enumerable.Repeat(message, 40)), addSpecialTokens: false);
 int[] Window(int content) => [tokenizer.ClsId, .. longIds.AsSpan(0, content), tokenizer.SepId];
+
+if (args.Contains("--ort-spinning"))
+{
+    // ONNX Runtime alone, with its default (spinning) intra-op pool: the fair multi-threaded baseline.
+    foreach (var (name, ids) in new[] { ("message", tokenizer.Encode(message)), ("128 tokens", Window(126)), ("512 tokens", Window(510)) })
+        Console.WriteLine($"  {name,-11} ({ids.Length,3} tokens)  ONNX Runtime (spinning): {Measure(() => OnnxReference.Shared.RunLogitsSpinning(ids)),7:F2} ms");
+    return;
+}
 
 if (args.Contains("--gemm"))
 {
@@ -103,16 +116,45 @@ if (args.Contains("--attention"))
     return;
 }
 
+if (args.Contains("--alloc-parts"))
+{
+    var w = model.Weights;
+    var x = new float[30 * 1536]; var y = new float[30 * 1536];
+    void Probe(string name, Action a)
+    {
+        for (int i = 0; i < 20; i++) a();
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        for (int i = 0; i < 100; i++) a();
+        Console.WriteLine($"  {name,-30} {(GC.GetAllocatedBytesForCurrentThread() - before) / 100,8} bytes/call");
+    }
+    Probe("Q4Linear.Forward", () => w.Layers[0].Query.Forward(x, 30, y, 1));
+    Probe("Classifier.Forward (remainder)", () => w.Classifier.Forward(x, 30, y, 1));
+    Probe("AddLayerNorm", () => Rampart.Model.Kernels.AddLayerNorm(x, x, y, 30, w.Layers[0].AttentionNorm.Gamma, w.Layers[0].AttentionNorm.Beta, 1e-12f));
+    Probe("Gelu", () => Rampart.Model.Kernels.Gelu(y.AsSpan(0, 30 * 1536)));
+    Probe("Softmax", () => Rampart.Model.Kernels.SoftmaxInPlace(y.AsSpan(0, 30)));
+    Probe("Heuristics.Detect", () => Rampart.Detection.Heuristics.Detect(message));
+    var ids30 = tokenizer.Encode(message);
+    var lg = new float[512 * 35];
+    Probe("ComputeLogits(30, span)", () => model.ComputeLogits(ids30, lg));
+    return;
+}
+
 if (args.Contains("--alloc"))
 {
     // Bytes allocated per call on all threads, after warm-up.
-    var analyzerA = new RampartAnalyzer();
+    var analyzerA = new RampartAnalyzer(new RampartOptions { Model = model });
     var guardA = new ChatGuard(analyzerA);
+    var ids30 = tokenizer.Encode(message);
+    var ids512 = Window(510);
+    var logits = new float[512 * model.Labels.Count];
+    var ner = new Rampart.Ner.NerDetector(model);
     foreach (var (name, action) in new (string, Action)[]
     {
-        ("ComputeLogits(30)", () => model.ComputeLogits(tokenizer.Encode(message))),
-        ("ComputeLogits(512)", () => model.ComputeLogits(Window(510))),
-        ("Tokenize(message)", () => tokenizer.Tokenize(message)),
+        ("ComputeLogits(30, span)", () => model.ComputeLogits(ids30, logits)),
+        ("ComputeLogits(512, span)", () => model.ComputeLogits(ids512, logits)),
+        ("CountTokens(message)", () => tokenizer.CountTokens(message)),
+        ("Encode(message)", () => tokenizer.Encode(message)),
+        ("NerDetector.Detect(message)", () => ner.Detect(message)),
         ("Heuristics(message)", () => Rampart.Detection.Heuristics.Detect(message)),
         ("Analyzer.Detect(message)", () => analyzerA.Detect(message)),
         ("Guard.Protect(message)", () => guardA.Protect(message)),
@@ -153,7 +195,7 @@ foreach (var (name, ids) in new[] { ("message", tokenizer.Encode(message)), ("12
     Console.WriteLine($"  {name,-11} ({ids.Length,3} tokens)  Rampart C#: {csharp,7:F2} ms   ONNX Runtime: {onnx,7:F2} ms");
 }
 
-var analyzer = new RampartAnalyzer();
+var analyzer = new RampartAnalyzer(new RampartOptions { Model = model });
 Console.WriteLine($"  ChatGuard.Protect (message, heuristics + model + policy): {Measure(() => new ChatGuard(analyzer).Protect(message)):F2} ms");
 
 var sw = Stopwatch.StartNew();

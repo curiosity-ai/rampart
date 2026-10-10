@@ -1,3 +1,5 @@
+using System.Buffers;
+using Rampart.Buffers;
 using Rampart.Model;
 using Rampart.Tokenization;
 
@@ -92,11 +94,7 @@ public sealed class TokenClassifier(RampartModel model) : ITokenClassifier
     /// <summary>Classify every token of <paramref name="text"/>; returns the non-<c>O</c> tokens in order.</summary>
     public IReadOnlyList<TokenEntity> Classify(string text)
     {
-        var tokens = Tokenizer.Tokenize(text);
-        var ids = new int[tokens.Count + 2];
-        ids[0] = Tokenizer.ClsId;
-        for (int i = 0; i < tokens.Count; i++) ids[i + 1] = Tokenizer.TokenToId(tokens[i]);
-        ids[^1] = Tokenizer.SepId;
+        var ids = Tokenizer.Encode(text);
         if (ids.Length > Model.MaxSequenceLength)
             throw new ArgumentException($"Text is {ids.Length} tokens; the model accepts {Model.MaxSequenceLength}. Use NerDetector, which windows long input.", nameof(text));
         return Classify(ids);
@@ -105,20 +103,63 @@ public sealed class TokenClassifier(RampartModel model) : ITokenClassifier
     /// <summary>Classify a pre-tokenized sequence (already wrapped in <c>[CLS]</c> … <c>[SEP]</c>).</summary>
     public List<TokenEntity> Classify(ReadOnlySpan<int> inputIds)
     {
+        var rows = new PooledList<NerRow>(16);
+        try
+        {
+            AppendRows(inputIds, ref rows);
+            var result = new List<TokenEntity>(rows.Count);
+            foreach (var r in rows.AsSpan()) result.Add(new TokenEntity { Entity = r.Entity, Score = r.Score, Index = r.Index, Word = r.Word });
+            return result;
+        }
+        finally
+        {
+            rows.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// The allocation-free path <see cref="NerDetector"/> uses: tokenize <paramref name="text"/> once
+    /// into <paramref name="ids"/> (with <c>[CLS]</c>/<c>[SEP]</c>; the caller disposes it), run the model
+    /// into pooled logits, and append one row per non-<c>O</c>, non-special token. Labels and words are
+    /// the model's own strings, so a row allocates nothing.
+    /// </summary>
+    internal void ClassifyWindow(ReadOnlySpan<char> text, ref PooledList<NerRow> rows, out PooledList<int> ids)
+    {
+        ids = new PooledList<int>(text.Length / 3 + 8);
+        ids.Add(Tokenizer.ClsId);
+        Tokenizer.EncodeTo(text, ref ids);
+        ids.Add(Tokenizer.SepId);
+        if (ids.Count > Model.MaxSequenceLength)
+        {
+            int count = ids.Count;
+            ids.Dispose();
+            throw new InvalidOperationException($"NER window of {count} tokens exceeds the model maximum of {Model.MaxSequenceLength}.");
+        }
+        AppendRows(ids.AsSpan(), ref rows);
+    }
+
+    private void AppendRows(ReadOnlySpan<int> inputIds, ref PooledList<NerRow> rows)
+    {
         var labels = Model.Labels;
         int classes = labels.Count;
-        var logits = Model.ComputeLogits(inputIds);
-        var result = new List<TokenEntity>();
-        for (int j = 0; j < inputIds.Length; j++)
+        var logits = ArrayPool<float>.Shared.Rent(Math.Max(1, inputIds.Length * classes));
+        try
         {
-            var row = logits.AsSpan(j * classes, classes);
-            int best = ArgMax(row);
-            var entity = labels[best];
-            if (entity == "O") continue;
-            if (Tokenizer.IsSpecial(inputIds[j])) continue;
-            result.Add(new TokenEntity { Entity = entity, Score = Float32Softmax(row, best), Index = j, Word = Tokenizer.IdToToken(inputIds[j]) });
+            Model.ComputeLogits(inputIds, logits.AsSpan(0, inputIds.Length * classes));
+            for (int j = 0; j < inputIds.Length; j++)
+            {
+                var row = logits.AsSpan(j * classes, classes);
+                int best = ArgMax(row);
+                var entity = labels[best];
+                if (entity == "O") continue;
+                if (Tokenizer.IsSpecial(inputIds[j])) continue;
+                rows.Add(new NerRow(entity, null, Float32Softmax(row, best), j, Tokenizer.IdToToken(inputIds[j]), 0, 0, false));
+            }
         }
-        return result;
+        finally
+        {
+            ArrayPool<float>.Shared.Return(logits);
+        }
     }
 
     private static int ArgMax(ReadOnlySpan<float> row)

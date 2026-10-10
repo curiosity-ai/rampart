@@ -1,4 +1,4 @@
-using System.Text;
+using Rampart.Buffers;
 
 namespace Rampart.Detection;
 
@@ -18,7 +18,9 @@ public sealed record PremaskResult(string Masked, int[] RawStart, int[] RawEnd);
 public static class Premask
 {
     /// <summary>The sentinel substituted for a premasked label. Stable across train/serve.</summary>
-    public static string SentinelFor(PiiLabel label) => $"[{label.ToName()}]";
+    public static string SentinelFor(PiiLabel label) => Sentinels[(int)label];
+
+    private static readonly string[] Sentinels = Enum.GetValues<PiiLabel>().Select(l => $"[{l.ToName()}]").ToArray();
 
     /// <summary>
     /// Replace each (merged, disjoint) heuristic span in <paramref name="raw"/> with its sentinel,
@@ -27,36 +29,19 @@ public static class Premask
     /// </summary>
     public static PremaskResult Apply(string raw, IEnumerable<PiiSpan> spans)
     {
-        var ordered = Policy.MergeSpans(spans).OrderBy(s => s.Start).ToList();
-        var masked = new StringBuilder(raw.Length);
-        var rawStart = new List<int>(raw.Length);
-        var rawEnd = new List<int>(raw.Length);
-
-        void CopyVerbatim(int from, int to)
+        var input = new PooledList<PiiSpan>(16);
+        var map = new PremaskBuffer(raw.Length);
+        try
         {
-            for (int i = from; i < to; i++)
-            {
-                masked.Append(raw[i]);
-                rawStart.Add(i);
-                rawEnd.Add(i + 1);
-            }
+            foreach (var s in spans) input.Add(s);
+            map.Build(raw, input.AsSpan());
+            return new PremaskResult(map.Masked.AsSpan().ToString(), map.RawStart.AsSpan().ToArray(), map.RawEnd.AsSpan().ToArray());
         }
-
-        int cursor = 0;
-        foreach (var span in ordered)
+        finally
         {
-            if (span.Start < cursor) continue; // defensive: skip any residual overlap
-            CopyVerbatim(cursor, span.Start);
-            foreach (var ch in SentinelFor(span.Label))
-            {
-                masked.Append(ch);
-                rawStart.Add(span.Start);
-                rawEnd.Add(span.End);
-            }
-            cursor = span.End;
+            input.Dispose();
+            map.Dispose();
         }
-        CopyVerbatim(cursor, raw.Length);
-        return new PremaskResult(masked.ToString(), [.. rawStart], [.. rawEnd]);
     }
 
     /// <summary>
@@ -71,5 +56,68 @@ public static class Premask
         int end = map.RawEnd[span.End - 1];
         if (end <= start) return null;
         return span with { Start = start, End = end, Text = raw[start..end] };
+    }
+}
+
+/// <summary>The pooled form of <see cref="PremaskResult"/> the analyzer builds on every call.</summary>
+internal struct PremaskBuffer(int capacity) : IDisposable
+{
+    public PooledList<char> Masked = new(capacity + 32);
+    public PooledList<int> RawStart = new(capacity + 32);
+    public PooledList<int> RawEnd = new(capacity + 32);
+
+    /// <summary>Replace each merged heuristic span with its sentinel, recording per-character raw offsets.</summary>
+    public void Build(ReadOnlySpan<char> raw, ReadOnlySpan<PiiSpan> spans)
+    {
+        var ordered = new PooledList<PiiSpan>(spans.Length);
+        try
+        {
+            Policy.MergeInto(spans, ref ordered); // already in start order
+            int cursor = 0;
+            foreach (var span in ordered.AsSpan())
+            {
+                if (span.Start < cursor) continue; // defensive: skip any residual overlap
+                CopyVerbatim(raw, cursor, span.Start);
+                foreach (var ch in Premask.SentinelFor(span.Label))
+                {
+                    Masked.Add(ch);
+                    RawStart.Add(span.Start);
+                    RawEnd.Add(span.End);
+                }
+                cursor = span.End;
+            }
+            CopyVerbatim(raw, cursor, raw.Length);
+        }
+        finally
+        {
+            ordered.Dispose();
+        }
+    }
+
+    private void CopyVerbatim(ReadOnlySpan<char> raw, int from, int to)
+    {
+        for (int i = from; i < to; i++)
+        {
+            Masked.Add(raw[i]);
+            RawStart.Add(i);
+            RawEnd.Add(i + 1);
+        }
+    }
+
+    /// <summary>Project masked <c>[start, end)</c> onto the raw text; false for an empty or degenerate span.</summary>
+    public readonly bool TryProject(int start, int end, out int rawStart, out int rawEnd)
+    {
+        rawStart = rawEnd = 0;
+        if (end <= start || (uint)start >= (uint)RawStart.Count || (uint)(end - 1) >= (uint)RawEnd.Count) return false;
+        rawStart = RawStart[start];
+        rawEnd = RawEnd[end - 1];
+        return rawEnd > rawStart;
+    }
+
+    public void Dispose()
+    {
+        Masked.Dispose();
+        RawStart.Dispose();
+        RawEnd.Dispose();
     }
 }
