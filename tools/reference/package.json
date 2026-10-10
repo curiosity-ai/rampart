@@ -1,0 +1,13 @@
+{
+  "name": "rampart-reference-fixtures",
+  "private": true,
+  "type": "module",
+  "description": "Runs the original @nationaldesignstudio/rampart pipeline to produce the parity fixtures the C# tests compare against.",
+  "scripts": {
+    "fixtures": "bun generate-fixtures.ts"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "3.7.5",
+    "@nationaldesignstudio/rampart": "0.1.3"
+  }
+}

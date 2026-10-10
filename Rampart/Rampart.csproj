@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <IsAotCompatible>true</IsAotCompatible>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <RootNamespace>Rampart</RootNamespace>
+    <PackageId>Rampart</PackageId>
+    <Description>Rampart for .NET: on-device PII detection and reversible redaction. A native C# port of National Design Studio's Rampart (deterministic recognizers + a 4-bit MiniLM token classifier), with the model embedded.</Description>
+    <PackageTags>PII;NLP;redaction;anonymization;privacy;LLM;NER</PackageTags>
+    <PackageLicenseExpression>MIT AND CC-BY-4.0</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The original Rampart artifacts, byte-for-byte as published on Hugging Face (CC BY 4.0). -->
+    <EmbeddedResource Include="Resources\model_q4.onnx" LogicalName="Rampart.model_q4.onnx" />
+    <EmbeddedResource Include="Resources\vocab.txt" LogicalName="Rampart.vocab.txt" />
+    <EmbeddedResource Include="Resources\config.json" LogicalName="Rampart.config.json" />
+    <None Include="..\LICENSE" Pack="true" PackagePath="\" />
+    <None Include="..\LICENSE-MODEL" Pack="true" PackagePath="\" />
+    <None Include="..\THIRD-PARTY-NOTICES.md" Pack="true" PackagePath="\" />
+    <None Include="..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Numerics.Tensors" Version="10.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Rampart.Tests" />
+    <InternalsVisibleTo Include="Rampart.Bench" />
+  </ItemGroup>
+
+</Project>
