@@ -19,7 +19,7 @@ namespace Rampart.Tokenization;
 /// 100 code points, or one that cannot be fully covered, becomes <c>[UNK]</c>.</item>
 /// </list>
 /// </summary>
-public sealed class WordPieceTokenizer
+internal sealed class WordPieceTokenizer
 {
     public const string ContinuationPrefix = "##";
     private const int MaxInputCharsPerWord = 100;

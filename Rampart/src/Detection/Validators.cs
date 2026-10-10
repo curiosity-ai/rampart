@@ -5,7 +5,7 @@ namespace Rampart.Detection;
 /// positives so the filter does not mangle numbers the assistant is allowed to keep (income
 /// figures, ages, years): a detector proposes a span, a validator decides whether it is real.
 /// </summary>
-public static class Validators
+internal static class Validators
 {
     /// <summary>Luhn checksum — gates CREDIT_CARD so arbitrary 16-digit runs don't match.</summary>
     public static bool IsLuhnValid(ReadOnlySpan<char> digits)

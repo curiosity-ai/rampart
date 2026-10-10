@@ -31,7 +31,7 @@ public enum PiiLabel
 }
 
 /// <summary>Which layer produced a span; used for merge tie-breaks and audit.</summary>
-public enum SpanSource
+internal enum SpanSource
 {
     Heuristic,
     Ner,
@@ -47,12 +47,12 @@ public enum SpanSource
 /// <param name="Score">Detector confidence in [0, 1]. Heuristics with validators report 1.</param>
 /// <param name="Source">Which layer produced the span.</param>
 /// <param name="Text">The raw substring covered, retained for placeholder rehydration.</param>
-public sealed record PiiSpan(int Start, int End, PiiLabel Label, double Score, SpanSource Source, string Text)
+internal sealed record PiiSpan(int Start, int End, PiiLabel Label, double Score, SpanSource Source, string Text)
 {
     public int Length => End - Start;
 }
 
-public static class PiiLabels
+internal static class PiiLabels
 {
     private static readonly FrozenDictionary<PiiLabel, string> Names = new Dictionary<PiiLabel, string>
     {

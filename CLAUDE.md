@@ -21,7 +21,8 @@ Deterministic recognizers + a 4-bit MiniLM token classifier + default-deny place
     (port of `detectNer`: windows, folding, BIO merge, span repair).
   - `src/Detection/` — `Heuristics`, `Validators`, `Policy` (merge + keep-set), `Premask`.
   - `src/Session/` — `SessionEntityTable` (placeholders), `StreamingReveal`.
-  - `src/` — `ChatGuard`, `RampartAnalyzer`, `Redactor`, `Types` (labels, `PiiSpan`).
+  - `src/` — the public API: `RampartAnalyzer` (+ `RampartOptions`), `RampartAnonymizer`, `RampartCloaker`,
+    `RecognizerResult`; and the internal `ChatGuard` (port of upstream `guard.ts`) and `Types` (labels, `PiiSpan`).
 - `tests/Rampart.Tests/` — xunit v3 suite; `Fixtures/reference.json` is generated, never hand-edited.
   `Upstream/` holds the ports of the source repo's `__tests__/*.test.ts`, one C# file per suite.
 - `tools/reference/` — `generate-fixtures.ts`, which runs the ORIGINAL source (a clone) to produce the fixture.
@@ -74,6 +75,23 @@ signature changes, update them in the same change. Every snippet compiles, and t
 comments is what the code prints. Check both by pasting them into a scratch console app that
 references `Rampart/Rampart.csproj`. Pick sample inputs the model handles cleanly, and state its
 misses under "Limitations" rather than hiding them.
+
+## The public API is the Catalyst.Presidio flow
+
+Consumers use Rampart the way they use Catalyst.Presidio, and only that way:
+`RampartAnalyzer.Analyze(text)` → `List<RecognizerResult>` → `RampartAnonymizer.Anonymize(text, results,
+operator)` (one way) or `RampartCloaker.CloakAsync(text, results, action)` (placeholders around a service
+call, plus a streaming overload). `RecognizerResult` has Catalyst.Presidio's shape (`End` inclusive,
+`float Score`, string `EntityType`) and the anonymizer its signature and operators, so code moves between the two.
+
+- **Everything else is internal**: tokenizer, classifier, NER, heuristics, premask, policy, session table,
+  streaming reveal, `ChatGuard`, the model's `ComputeLogits`. Tests and the bench reach them through
+  `InternalsVisibleTo`. Do not make a stage public, and do not add integration helpers (DI registration,
+  `IChatClient` wrappers and the like) to the package.
+- The internal `PiiSpan` is end-exclusive like the reference; convert at the boundary (`End - 1` out,
+  `End + 1` in).
+- `PipelineParityTests.AnalyzeThenCloak*` pins the public flow to the reference: what `CloakAsync` sends
+  must equal upstream `guard.protect` on every fixture case and conversation.
 
 ## The port is defined by parity — keep it that way
 

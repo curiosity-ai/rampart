@@ -102,9 +102,11 @@ C# 4 threads 6,250–8,810, ORT 4 threads 4,400–8,170.
 Native memory is not in those figures. The working set (whole bench process, both engines and the
 test fixture loaded) went from 786 MB to 965 MB over the sweep.
 
-**End to end** — `ChatGuard.Protect` on a 30-token chat message, i.e. heuristics, tokenizer, model,
-BIO merge, policy and placeholders: 10.7 ms on one thread, 4.4–4.8 ms on four. Loading the model from
-the embedded resource: 0.3–0.5 s.
+**End to end**: analyzing and cloaking a 30-token chat message (heuristics, tokenizer, model, BIO
+merge, policy and placeholders) takes 10.7 ms on one thread and 4.4–4.8 ms on four. These runs
+measured the internal `ChatGuard.Protect`, which does the same work as `Analyze` followed by what
+`RampartCloaker.CloakAsync` sends. A later run through the public API read 10.5 ms and 4.6 ms.
+Loading the model from the embedded resource takes 0.15–0.5 s.
 
 ## AVX-512 A/B
 
@@ -121,7 +123,7 @@ On .NET 10 that one variable covers the whole AVX-512 family. The older per-ISA
 | 256 | 126.01 | 81.90 | 1.54× | 44.02 | 31.73 | 1.39× |
 | 512 | 317.70 | 191.48 | 1.66× | 104.16 | 68.13 | 1.53× |
 
-Calibration GEMM: 61.7 GFLOPS with AVX2, 101.0 with AVX-512. `ChatGuard.Protect`: 17.2 → 11.6 ms on
+Calibration GEMM: 61.7 GFLOPS with AVX2, 101.0 with AVX-512. Analyze + cloak: 17.2 → 11.6 ms on
 one thread, 6.4 → 5.4 ms on four. AVX-512 is worth having even where the runtime does not call it
 hardware-accelerated. Without it the engine runs about 1.5× slower than ORT on one thread: ORT has
 its own AVX-512 kernels, and these numbers say nothing about how ORT would fare without them.

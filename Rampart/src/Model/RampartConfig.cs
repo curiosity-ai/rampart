@@ -4,7 +4,7 @@ using System.Text.Json.Serialization;
 namespace Rampart.Model;
 
 /// <summary>The subset of the Hugging Face <c>config.json</c> the encoder needs.</summary>
-public sealed class RampartConfig
+internal sealed class RampartConfig
 {
     [JsonPropertyName("hidden_size")] public int HiddenSize { get; init; }
     [JsonPropertyName("num_hidden_layers")] public int NumHiddenLayers { get; init; }

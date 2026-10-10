@@ -10,7 +10,7 @@ namespace Rampart.Session;
 /// the end of the stream.
 /// <para>Not thread-safe: one instance per stream.</para>
 /// </summary>
-public sealed partial class StreamingReveal
+internal sealed partial class StreamingReveal
 {
     private readonly Func<string, string?> _resolve;
     private string _buffer = "";

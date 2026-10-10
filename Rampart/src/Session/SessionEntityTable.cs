@@ -9,7 +9,7 @@ namespace Rampart.Session;
 /// <summary>Result of scrubbing one message.</summary>
 /// <param name="Text">Text with PII replaced by placeholders. Safe to send or log.</param>
 /// <param name="Placeholders">Placeholders introduced or reused in this message, left to right.</param>
-public sealed record ScrubResult(string Text, IReadOnlyList<string> Placeholders);
+internal sealed record ScrubResult(string Text, IReadOnlyList<string> Placeholders);
 
 /// <summary>
 /// A per-conversation store mapping raw PII values to stable, typed placeholders
@@ -18,7 +18,7 @@ public sealed record ScrubResult(string Text, IReadOnlyList<string> Placeholders
 /// the real value back into its reply before display. The table lives only on the client.
 /// <para>Not thread-safe: use one table (one <see cref="ChatGuard"/>) per conversation.</para>
 /// </summary>
-public sealed partial class SessionEntityTable
+internal sealed partial class SessionEntityTable
 {
     private readonly Dictionary<string, string> _forward = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string>.AlternateLookup<ReadOnlySpan<char>> _forwardLookup;

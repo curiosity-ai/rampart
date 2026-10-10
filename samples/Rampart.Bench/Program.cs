@@ -146,7 +146,6 @@ if (args.Contains("--alloc"))
 {
     // Bytes allocated per call on all threads, after warm-up.
     var analyzerA = new RampartAnalyzer(new RampartOptions { Model = model });
-    var guardA = new ChatGuard(analyzerA);
     var ids30 = tokenizer.Encode(message);
     var ids512 = Window(510);
     var logits = new float[512 * model.Labels.Count];
@@ -160,7 +159,8 @@ if (args.Contains("--alloc"))
         ("NerDetector.Detect(message)", () => ner.Detect(message)),
         ("Heuristics(message)", () => Rampart.Detection.Heuristics.Detect(message)),
         ("Analyzer.Detect(message)", () => analyzerA.Detect(message)),
-        ("Guard.Protect(message)", () => guardA.Protect(message)),
+        ("Analyze(message)", () => analyzerA.Analyze(message)),
+        ("Analyze + cloak(message)", () => new RampartCloaker().Cloak(message, analyzerA.Analyze(message))),
     })
     {
         for (int i = 0; i < 50; i++) action();

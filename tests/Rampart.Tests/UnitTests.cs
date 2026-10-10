@@ -247,27 +247,6 @@ public sealed class SessionTests
     }
 }
 
-public sealed class RedactorTests
-{
-    [Fact]
-    public void Modes()
-    {
-        var analyzer = new RampartAnalyzer();
-        const string text = "My name is Alex Rivera, SSN 472-81-0094, I live in Boston.";
-        Assert.Equal("My name is [GIVEN_NAME] [SURNAME], SSN [SSN], I live in Boston.", analyzer.Redact(text));
-        Assert.Equal("My name is **** ******, SSN ***********, I live in Boston.", analyzer.Redact(text, RedactionMode.Mask));
-        Assert.Equal("My name is  , SSN , I live in Boston.", analyzer.Redact(text, RedactionMode.Remove));
-        Assert.Contains(Convert.ToHexStringLower(SHA256.HashData("472-81-0094"u8)), analyzer.Redact(text, RedactionMode.Hash));
-    }
-
-    [Fact]
-    public void AnalyzeReturnsKeptLabelsToo()
-    {
-        var spans = new RampartAnalyzer().Analyze("I live in Old Lyme CT 06371.");
-        Assert.Contains(spans, s => s.Label == PiiLabel.ZipCode && s.Text == "06371");
-    }
-}
-
 public sealed class GemmTests
 {
     public static TheoryData<bool, bool> Paths() => new()

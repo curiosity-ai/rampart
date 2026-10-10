@@ -16,7 +16,7 @@ namespace Rampart.Detection;
 /// here, and <c>\s</c> is spelled out as JavaScript's whitespace set.
 /// </para>
 /// </summary>
-public static partial class Heuristics
+internal static partial class Heuristics
 {
     // ASCII word boundary, as JavaScript's \b (without the u/v flags).
     private const string W = "[A-Za-z0-9_]";

@@ -6,42 +6,36 @@ using Rampart.Ner;
 
 namespace Rampart;
 
-/// <summary>Options for <see cref="RampartAnalyzer"/> and <see cref="ChatGuard"/>.</summary>
+/// <summary>Options for <see cref="RampartAnalyzer"/>.</summary>
 public sealed class RampartOptions
 {
     /// <summary>Model to run; defaults to the embedded Rampart model (<see cref="RampartModel.Default"/>).</summary>
     public RampartModel? Model { get; init; }
 
-    /// <summary>A pre-built contextual detector. When set, <see cref="Model"/> and <see cref="MinScore"/> are ignored.</summary>
-    public INerDetector? Ner { get; init; }
-
-    /// <summary>Skip the classifier and run the deterministic heuristics only.</summary>
-    public bool HeuristicsOnly { get; init; }
-
-    /// <summary>
-    /// Do not premask structured PII before the model. Only for a model trained without the prefilter;
-    /// the heuristic spans still run as a safety net.
-    /// </summary>
-    public bool NoPrefilter { get; init; }
-
-    /// <summary>NER spans below this score are discarded (unless they bridge to a confident span).</summary>
+    /// <summary>Model entities below this score are discarded (unless they bridge to a confident one). Default 0.4.</summary>
     public double MinScore { get; init; } = NerDetector.DefaultMinScore;
 
-    /// <summary>Labels to preserve in the text; <c>null</c> → CITY, STATE, ZIP_CODE.</summary>
+    /// <summary>
+    /// Entity types the analyzer does not report, so they stay in the text. <c>null</c> (the default)
+    /// keeps CITY, STATE and ZIP_CODE, as the original Rampart does; an empty set reports everything.
+    /// </summary>
     public IEnumerable<PiiLabel>? KeepLabels { get; init; }
 
-    /// <summary>Placeholder display names; e.g. GIVEN_NAME → "NAME" mints <c>[NAME_1]</c>.</summary>
-    public IReadOnlyDictionary<PiiLabel, string>? Aliases { get; init; }
+    // The reference's test hooks, kept for the ported upstream tests.
+    internal INerDetector? Ner { get; init; }
+    internal bool HeuristicsOnly { get; init; }
+    internal bool NoPrefilter { get; init; }
+    internal IReadOnlyDictionary<PiiLabel, string>? Aliases { get; init; }
 }
 
 /// <summary>
-/// Stateless PII detection: the deterministic layer (SSN, card, email, URL, IP/MAC) plus the
-/// contextual classifier, which sees the text with the structured spans already replaced by
-/// sentinels (<c>[SSN]</c>, …). Thread-safe.
+/// Finds the PII in a text, like Catalyst.Presidio's <c>PresidioAnalyzer</c>: the deterministic
+/// recognizers (SSN, credit card, email, URL, IP/MAC) plus the Rampart model, which sees the text with
+/// the structured entities already masked. Thread-safe; create one and share it.
 /// <code>
-/// var analyzer = new RampartAnalyzer();
-/// foreach (var span in analyzer.Analyze("My name is Alex Rivera, SSN 472-81-0094."))
-///     Console.WriteLine($"{span.Label} {span.Text} {span.Score:0.00}");
+/// var text = "My name is Alex Rivera, SSN 472-81-0094.";
+/// var results = new RampartAnalyzer().Analyze(text);
+/// var anonymized = new RampartAnonymizer().Anonymize(text, results);   // "My name is **** ******, SSN ***********."
 /// </code>
 /// </summary>
 public sealed class RampartAnalyzer
@@ -49,20 +43,38 @@ public sealed class RampartAnalyzer
     private readonly INerDetector? _ner;
     private readonly bool _noPrefilter;
 
+    private readonly IReadOnlySet<PiiLabel> _keepLabels;
+
     public RampartAnalyzer(RampartOptions? options = null)
     {
         options ??= new RampartOptions();
+        _keepLabels = PiiLabels.ResolveKeepLabels(options.KeepLabels);
         _noPrefilter = options.NoPrefilter;
         if (options.Ner is not null) _ner = options.Ner;
         else if (!options.HeuristicsOnly) _ner = new NerDetector(options.Model ?? RampartModel.Default, options.MinScore);
     }
 
     /// <summary>
-    /// Every span both layers report over <paramref name="text"/>, before merging: heuristic spans
-    /// first, then model spans projected back onto the raw text. Feed this to a
-    /// <see cref="Session.SessionEntityTable"/> or <see cref="Policy"/>.
+    /// The PII in <paramref name="text"/>: disjoint, ordered by position, without the kept entity
+    /// types (<see cref="RampartOptions.KeepLabels"/>). Pass the results to
+    /// <see cref="RampartAnonymizer"/> or <see cref="RampartCloaker"/>.
     /// </summary>
-    public List<PiiSpan> Detect(string text)
+    public List<RecognizerResult> Analyze(string text)
+    {
+        var results = new List<RecognizerResult>();
+        foreach (var span in Policy.MergeSpans(Detect(text)))
+        {
+            if (_keepLabels.Contains(span.Label)) continue;
+            results.Add(new RecognizerResult(span.Start, span.End - 1, span.Label.ToName(), (float)span.Score));
+        }
+        return results;
+    }
+
+    /// <summary>
+    /// Every span both layers report over <paramref name="text"/>, before merging: heuristic spans
+    /// first, then model spans projected back onto the raw text (end exclusive).
+    /// </summary>
+    internal List<PiiSpan> Detect(string text)
     {
         ArgumentNullException.ThrowIfNull(text);
         var heuristic = Heuristics.Detect(text);
@@ -109,7 +121,4 @@ public sealed class RampartAnalyzer
         heuristic.AddRange(contextual);
         return heuristic;
     }
-
-    /// <summary>The detected entities as a disjoint, start-ordered set (kept labels included).</summary>
-    public List<PiiSpan> Analyze(string text) => Policy.MergeSpans(Detect(text));
 }
