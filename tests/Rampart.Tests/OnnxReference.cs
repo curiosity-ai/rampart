@@ -17,6 +17,7 @@ public sealed class OnnxReference : IDisposable
 
     private readonly InferenceSession _literal;
     private readonly InferenceSession _optimized;
+    private readonly InferenceSession _singleThread;
 
     /// <summary>Names of every traced tensor, in graph order.</summary>
     public IReadOnlyList<string> TracePoints { get; }
@@ -45,6 +46,9 @@ public sealed class OnnxReference : IDisposable
         // Idle intra-op threads would otherwise spin after each run and steal cores from whatever runs next.
         optimized.AddSessionConfigEntry("session.intra_op.allow_spinning", "0");
         _optimized = new InferenceSession(bytes, optimized);
+        var single = new SessionOptions { GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL, IntraOpNumThreads = 1, InterOpNumThreads = 1 };
+        single.AddSessionConfigEntry("session.intra_op.allow_spinning", "0");
+        _singleThread = new InferenceSession(bytes, single);
     }
 
     /// <summary>Runs the literal graph and returns every trace point by name.</summary>
@@ -58,6 +62,24 @@ public sealed class OnnxReference : IDisposable
     public float[] RunLogits(int[] ids)
     {
         using var results = _optimized.Run(Inputs(ids));
+        return results.First(r => r.Name == "logits").AsTensor<float>().ToArray();
+    }
+
+    /// <summary>Logits from the optimized graph with ORT's default thread pool, intra-op spinning on.</summary>
+    public float[] RunLogitsSpinning(int[] ids)
+    {
+        _spinning ??= new InferenceSession(RampartModel.ReadResource(typeof(RampartModel).Assembly, "Rampart.model_q4.onnx"),
+            new SessionOptions { GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL });
+        using var results = _spinning.Run(Inputs(ids));
+        return results.First(r => r.Name == "logits").AsTensor<float>().ToArray();
+    }
+
+    private InferenceSession? _spinning;
+
+    /// <summary>Logits from the optimized graph on one thread (intra- and inter-op).</summary>
+    public float[] RunLogitsSingleThread(int[] ids)
+    {
+        using var results = _singleThread.Run(Inputs(ids));
         return results.First(r => r.Name == "logits").AsTensor<float>().ToArray();
     }
 
@@ -129,5 +151,7 @@ public sealed class OnnxReference : IDisposable
     {
         _literal.Dispose();
         _optimized.Dispose();
+        _singleThread.Dispose();
+        _spinning?.Dispose();
     }
 }

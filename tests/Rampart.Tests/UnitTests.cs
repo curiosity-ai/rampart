@@ -304,15 +304,143 @@ public sealed class GemmTests
     }
 
     [Fact]
-    public void QuantizedAndExpandedWeightsAgree()
+    public void PanelOrderedWeightsDecodeToTheShippedNibbles()
     {
-        var packed = RampartModel.Load(new RampartModelOptions { KeepWeightsQuantized = true });
-        var expanded = RampartModel.Default;
-        foreach (var text in new[] { "My name is Alex Rivera.", Corpus.Long() })
+        // Decode layer 0's query weight straight from the ONNX tensors and compare every weight with the
+        // permuted copy, both through the scalar accessor and the SIMD tile dequantizer.
+        var onnx = Rampart.Onnx.OnnxModel.Parse(RampartModel.ReadResource(typeof(RampartModel).Assembly, "Rampart.model_q4.onnx"));
+        var mm = onnx.Nodes.Single(n => n.Outputs[0] == OnnxNames.MatMul(0, "attention/self/query"));
+        var packed = onnx.GetTensor(mm.Inputs[1]).AsBytes();
+        var scales = onnx.GetTensor(mm.Inputs[2]).AsFloats();
+        var linear = RampartModel.Default.Weights.Layers[0].Query;
+        var panel = new float[linear.K * Q4Linear.Tile];
+        for (int tile = 0; tile < linear.Tiles; tile++)
         {
-            var content = expanded.Tokenizer.Encode(text, addSpecialTokens: false);
-            int[] ids = [expanded.Tokenizer.ClsId, .. content.AsSpan(0, Math.Min(510, content.Length)), expanded.Tokenizer.SepId];
-            Assert.Equal(expanded.ComputeLogits(ids), packed.ComputeLogits(ids));
+            linear.DequantizeTile(tile, panel);
+            for (int r = 0; r < Q4Linear.Tile; r++)
+            {
+                int row = tile * Q4Linear.Tile + r;
+                for (int k = 0; k < linear.K; k++)
+                {
+                    byte b = packed[row * (linear.K / 2) + k / 2];
+                    int q = k % 2 == 0 ? b & 0x0F : b >> 4;
+                    float expected = (q - 8f) * scales[row * linear.BlocksPerRow + k / linear.BlockSize];
+                    Assert.Equal(expected, linear.Weight(row, k));
+                    Assert.Equal(expected, panel[k * Q4Linear.Tile + r]);
+                }
+            }
         }
+    }
+}
+
+public sealed class ExpTests
+{
+    [Fact]
+    public void FastExpIsWithinTwoUlpOverTheSoftmaxRange()
+    {
+        double worst = 0;
+        var xs = new float[16];
+        for (double x0 = -87; x0 <= 88; x0 += 16 * 1e-3)
+        {
+            for (int i = 0; i < 16; i++) xs[i] = (float)(x0 + i * 1e-3);
+            var v512 = Kernels.Exp(System.Runtime.Intrinsics.Vector512.Create(xs));
+            var v256 = Kernels.Exp(System.Runtime.Intrinsics.Vector256.Create(xs.AsSpan(0, 8)));
+            for (int i = 0; i < 16; i++)
+            {
+                double exact = Math.Exp(xs[i]);
+                worst = Math.Max(worst, Math.Abs(v512[i] - exact) / exact);
+                worst = Math.Max(worst, Math.Abs(Kernels.Exp(xs[i]) - exact) / exact);
+                if (i < 8) worst = Math.Max(worst, Math.Abs(v256[i] - exact) / exact);
+            }
+        }
+        Assert.True(worst < 2.5e-7, $"max relative error {worst}");
+    }
+
+    [Fact]
+    public void SoftmaxSumsToOne()
+    {
+        var row = Enumerable.Range(0, 37).Select(i => (float)Math.Sin(i) * 20).ToArray();
+        Kernels.SoftmaxInPlace(row);
+        Assert.Equal(1.0, row.Sum(x => (double)x), 5);
+        Assert.All(row, p => Assert.InRange(p, 0f, 1f));
+    }
+}
+
+public sealed class HeuristicsScannerTests
+{
+    /// <summary>The hand-written scanners against the regular expressions they replace, on random text.</summary>
+    [Fact]
+    public void ScannersMatchTheirExpressions()
+    {
+        var random = new Random(7);
+        const string alphabet = "0123456789012345.....---   a_1225";
+        for (int trial = 0; trial < 20000; trial++)
+        {
+            var chars = new char[random.Next(0, 40)];
+            for (int i = 0; i < chars.Length; i++) chars[i] = alphabet[random.Next(alphabet.Length)];
+            var text = new string(chars);
+
+            var expected = Heuristics.DigitRun().Matches(text).Select(m => (m.Index, m.Length)).ToList();
+            var actual = new List<(int, int)>();
+            for (int at = 0; (at = Heuristics.NextDigitRun(text, at, out int length)) >= 0; at += length) actual.Add((at, length));
+            Assert.True(expected.SequenceEqual(actual), $"digit runs differ on \"{text}\"");
+
+            expected = Heuristics.Ipv4Rule().Matches(text).Select(m => (m.Index, m.Length)).ToList();
+            actual.Clear();
+            for (int at = 0; (at = Heuristics.NextIpv4(text, at, out int length)) >= 0; at += length) actual.Add((at, length));
+            Assert.True(expected.SequenceEqual(actual), $"IPv4 differs on \"{text}\"");
+        }
+    }
+}
+
+/// <summary>
+/// Runs <see cref="AllocationTests"/> on its own. <c>ArrayPool&lt;T&gt;.Shared</c> allocates a fresh array
+/// when concurrent renters have drained its per-core stocks, so measured next to the parity tests a
+/// pass that allocates nothing on its own can read a few kilobytes.
+/// </summary>
+[CollectionDefinition(nameof(AllocationTests), DisableParallelization = true)]
+public sealed class AllocationCollection;
+
+/// <summary>The hot paths allocate nothing once warm (see CLAUDE.md, "Performance and allocation notes").</summary>
+[Collection(nameof(AllocationTests))]
+public sealed class AllocationTests
+{
+    private static readonly RampartModel SingleThreaded = RampartModel.Load(new RampartModelOptions { MaxDegreeOfParallelism = 1 });
+
+    private static long Measure(Action action)
+    {
+        for (int i = 0; i < 20; i++) action();
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        for (int i = 0; i < 20; i++) action();
+        return (GC.GetAllocatedBytesForCurrentThread() - before) / 20;
+    }
+
+    [Fact]
+    public void ComputeLogitsIntoASpanAllocatesNothing()
+    {
+        var model = SingleThreaded;
+        var ids = model.Tokenizer.Encode("My name is Alex Rivera and I live at 12 Main Street, Springfield.");
+        int[] longIds = [model.Tokenizer.ClsId, .. model.Tokenizer.Encode(Corpus.Long(), addSpecialTokens: false).AsSpan(0, 300), model.Tokenizer.SepId];
+        var logits = new float[512 * model.Labels.Count];
+        Assert.Equal(0, Measure(() => model.ComputeLogits(ids, logits)));
+        Assert.Equal(0, Measure(() => model.ComputeLogits(longIds, logits)));
+    }
+
+    [Fact]
+    public void CountingTokensAllocatesNothing()
+    {
+        var tokenizer = SingleThreaded.Tokenizer;
+        Assert.Equal(0, Measure(() => tokenizer.CountTokens("Hola, me llamo José Ángel García López; call (202) 555-0188 [SEP] ok.")));
+    }
+
+    [Fact]
+    public void DetectionAllocatesOnlyItsResults()
+    {
+        var analyzer = new RampartAnalyzer(new RampartOptions { Model = SingleThreaded });
+        const string text = "My name is Alex Rivera and I live at 12 Main Street, Springfield. Call me at (202) 555-0188.";
+        int spans = analyzer.Detect(text).Count;
+        // A list, and per span a record plus its text: a generous per-span bound, far below the
+        // tens of kilobytes intermediate buffers would cost.
+        Assert.InRange(Measure(() => analyzer.Detect(text)), 1, 128 + spans * 160);
     }
 }

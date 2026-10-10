@@ -26,6 +26,14 @@ await foreach (var chunk in guard.RevealAsync(llm.StreamAsync(safe.Text)))
     Console.Write(chunk);                        // placeholders split across chunks are handled
 ```
 
+```
+dotnet add package Rampart
+```
+
+[`Rampart/README.md`](Rampart/README.md) is the package's own readme, also shown on NuGet. It has
+samples for `IChatClient` round trips, streaming, multi-turn conversations, detection, log redaction,
+policy, other languages and ASP.NET Core.
+
 ## What it does
 
 ```
@@ -109,14 +117,21 @@ exported with 4-bit `MatMulNBits` linears (block 32, scale per block, zero point
 by graph structure — nothing is re-quantized or converted — and evaluates:
 
 - **Embeddings**: word + token type, then + position, exactly the graph's order; LayerNorm.
-- **Linears**: 4-bit weights unpacked with SIMD nibble shuffles into transposed float panels, then a
-  register-blocked GEMM (6×32 block on AVX-512, 4×16 on AVX2/NEON, FMA, no horizontal sums).
-  By default the panels are built once at load (~42 MB); `RampartModelOptions.KeepWeightsQuantized`
-  keeps ~5 MB of 4-bit weights and dequantizes per call instead, with identical results.
-- **Attention**: Q and K each scaled by `√(1/√64)` as in the graph; per (head, block of queries)
-  tasks that run scores, softmax and the weighted sum of V while the block is in cache.
-- **FFN**: exact-erf GELU (vectorized rational approximation, |error| < 5e-7).
+- **Linears**: the 4-bit weights stay 4-bit (~5 MB for the model, so they stay in the last-level
+  cache between calls). At load they are only *permuted* into panel order (bit-exact); each call
+  dequantizes one 32-column panel at a time with a few SIMD instructions and multiplies every token
+  against it with a register-blocked GEMM (12×32 block in 24 zmm accumulators on AVX-512, 6×16 on
+  AVX2/NEON; broadcast-FMA, no horizontal sums).
+- **Attention**: Q and K each scaled by `√(1/√32)` as in the graph; Kᵀ and V packed per head; each
+  (head, block of queries) task runs scores, softmax and the weighted sum of V in an L2-sized
+  scratch buffer, so the `[heads, T, T]` probabilities never go to memory.
+- **FFN**: exact-erf GELU (vectorized rational approximation, |error| < 5e-7); residual adds fused
+  into the LayerNorms; softmax with a fast vectorized `exp` (< 2.5e-7 relative error).
 - **Classifier**: argmax over 35 labels, scores from a float32 softmax as transformers.js computes it.
+- **Threads**: a dedicated pool of `cores − 1` workers that spin briefly between the ~40 parallel
+  regions of a pass, so short inputs gain from parallelism too. `RampartModelOptions.MaxDegreeOfParallelism = 1`
+  runs everything on the calling thread (for servers that parallelize across requests); a call that
+  finds the pool busy with another inference runs inline rather than queueing.
 
 Tokenization reproduces the transformers.js tokenizer the reference runs (special-token splitting,
 `BertNormalizer` cleaning, CJK padding, lowercasing, NFD accent stripping, `BertPreTokenizer`,
@@ -124,17 +139,35 @@ greedy WordPiece with `##` continuations and the 100-character limit).
 
 ### Performance
 
-Median latency on a 4-core cloud Xeon (AVX-512), weights expanded, against ONNX Runtime 1.23 with
-full graph optimization on the same model (`samples/Rampart.Bench`):
+Median latency on a 4-core cloud Xeon (AVX-512) against ONNX Runtime 1.23 with full graph
+optimization on the same model. All four engines ran in one process, interleaved
+(`samples/Rampart.Bench`). Full sweep, environment, calibration and AVX-512 A/B are in
+[BENCHMARK-RESULT.md](samples/Rampart.Bench/BENCHMARK-RESULT.md):
 
-| Input | Rampart C# | ONNX Runtime |
-|---|---|---|
-| chat message (30 tokens) | ~10.5 ms | ~9.8 ms |
-| 128 tokens | ~35 ms | ~22 ms |
-| 512 tokens (one full window) | ~140 ms | ~91 ms |
+| Tokens | Rampart C#, 1 thread | ONNX Runtime, 1 thread | Rampart C#, 4 threads | ONNX Runtime, 4 threads (spinning) |
+|---:|---:|---:|---:|---:|
+| 32 (a chat message) | 9.9 ms | 13.3 ms | 4.6 ms | 6.4 ms |
+| 128 | 37.9 ms | 37.2 ms | 14.5 ms | 17.1 ms |
+| 256 | 86.5 ms | 79.8 ms | 30.8 ms | 29.2 ms |
+| 512 (one full window) | 196 ms | 208 ms | 65 ms | 80 ms |
 
-`ChatGuard.Protect` on the chat message, everything included, takes ~13 ms. Loading the embedded
-model takes ~0.1–0.2 s. Inputs longer than one window are scanned in overlapping 500-token windows.
+Short inputs are ~25% faster than ORT. From 128 tokens up, one thread is at parity (±8%, within the
+VM's run-to-run noise), and four threads are faster at every length but 256.
+`ChatGuard.Protect` on the chat message, everything included, takes ~4.5 ms (~10.7 ms on one thread).
+Loading the embedded model takes 0.3–0.5 s. Inputs longer than one window are scanned in overlapping
+500-token windows.
+
+### Allocations
+
+Every buffer on the hot path comes from `ArrayPool<T>.Shared`, and the per-character Unicode folds
+are cached, so after warm-up (bytes per call, all threads, `--alloc`):
+
+| Call | Allocated |
+|---|---|
+| `RampartModel.ComputeLogits(ids, Span<float> logits)` — any length, 1 or 4 threads | 0 B |
+| `WordPieceTokenizer.CountTokens` | 0 B |
+| `RampartAnalyzer.Detect` (chat message) | ~0.7 KB — the returned spans, their text and the list |
+| `ChatGuard.Protect` (chat message) | ~1.2 KB — the above plus the scrubbed string and placeholders |
 
 ## Validation
 
@@ -190,6 +223,14 @@ dotnet run -c Release --project samples/Rampart.Redact     # interactive redacto
 ```
 
 Requires the .NET 10 SDK. Tests use xunit v3 on Microsoft.Testing.Platform (`global.json`).
+
+## Publishing
+
+[`.devops/azure-pipelines.yml`](.devops/azure-pipelines.yml) is the Azure DevOps pipeline. On every
+push to `main` it builds the solution and runs the whole test suite. Only if that passes does it
+pack `Rampart` with a CalVer version (`yy.M.<buildId>`) and push it to nuget.org through the
+`nuget-curiosity-org` service connection. Pull request builds run the build and tests and stop
+there.
 
 ## Licenses
 

@@ -7,11 +7,15 @@ Deterministic recognizers + a 4-bit MiniLM token classifier + default-deny place
 ## Layout
 
 - `Rampart/` — the library (net10.0, package id `Rampart`).
+  - `README.md` — the package readme (NuGet page): consumer samples. The repo-root README covers the
+    port, validation and benchmarks.
   - `Resources/` — `model_q4.onnx`, `vocab.txt`, `config.json`, `LICENSE` (CC BY 4.0), byte-for-byte
     the Hugging Face files. Embedded as `Rampart.model_q4.onnx`, `Rampart.vocab.txt`, `Rampart.config.json`.
   - `src/Onnx/` — minimal protobuf reader for ONNX `ModelProto` (nodes, initializers, `Constant`s).
   - `src/Model/` — `RampartWeights` (binds tensors by graph structure/names), `RampartModel` (forward
-    pass), `Q4Linear` (MatMulNBits weights), `Gemm` (SIMD micro-kernels), `Kernels` (LayerNorm, GELU/erf, softmax).
+    pass), `Q4Linear` (MatMulNBits weights in panel order), `Gemm` (SIMD micro-kernels), `Kernels` (LayerNorm,
+    GELU/erf, softmax/exp), `Parallelism` (spinning worker pool).
+  - `src/Buffers/` — `PooledList<T>`, the ArrayPool-backed scratch list of every hot path.
   - `src/Tokenization/` — `WordPieceTokenizer` (mirrors the transformers.js BERT tokenizer).
   - `src/Ner/` — `TokenClassifier` (the transformers.js token-classification pipeline), `NerDetector`
     (port of `detectNer`: windows, folding, BIO merge, span repair).
@@ -21,8 +25,12 @@ Deterministic recognizers + a 4-bit MiniLM token classifier + default-deny place
 - `tests/Rampart.Tests/` — xunit v3 suite; `Fixtures/reference.json` is generated, never hand-edited.
   `Upstream/` holds the ports of the source repo's `__tests__/*.test.ts`, one C# file per suite.
 - `tools/reference/` — `generate-fixtures.ts`, which runs the ORIGINAL source (a clone) to produce the fixture.
-- `samples/Rampart.Bench/` — latency vs ONNX Runtime and a per-stage profile (`-- --profile`).
+- `samples/Rampart.Bench/` — latency sweep vs ONNX Runtime, per-stage profile, kernel and allocation
+  modes; `BENCHMARK-RESULT.md` holds the published numbers.
 - `samples/Rampart.Redact/` — interactive redactor, the counterpart of upstream's `cli/redact.ts`.
+- `.devops/azure-pipelines.yml` — Azure DevOps: build, test, then pack and push `Rampart` to nuget.org
+  (CalVer `yy.M.<buildId>`, service connection `nuget-curiosity-org`) on pushes to `main`; PR builds
+  stop after the tests.
 
 ## Working against the original source
 
@@ -60,6 +68,12 @@ xunit v3 runs on Microsoft.Testing.Platform (`global.json`), so `dotnet test` ta
 The built test assembly is also directly runnable: `dotnet tests/Rampart.Tests/bin/Release/net10.0/Rampart.Tests.dll -class "*LayerParity*"`.
 
 The model is a plain git blob (14.7 MB), not Git LFS, so a fresh clone can run every test.
+
+`Rampart/README.md` ships in the package, so its samples are the public face of the API: when a public
+signature changes, update them in the same change. Every snippet compiles, and the output in its
+comments is what the code prints. Check both by pasting them into a scratch console app that
+references `Rampart/Rampart.csproj`. Pick sample inputs the model handles cleanly, and state its
+misses under "Limitations" rather than hiding them.
 
 ## The port is defined by parity — keep it that way
 
@@ -103,18 +117,44 @@ It imports the clone's `index.ts`, `eval/public-cases.ts` and its own `@huggingf
 to run unless the model is byte-identical to the embedded one, and records the source commit in the
 fixture. Add new inputs to `tools/reference/corpus.ts`, never to the JSON.
 
-## Performance notes
+## Performance and allocation notes
 
-- Default load expands 4-bit weights into transposed float panels (~42 MB) once;
-  `RampartModelOptions.KeepWeightsQuantized` keeps ~5 MB and dequantizes per call (same results;
-  `GemmTests.QuantizedAndExpandedWeightsAgree`).
-- `Gemm.Multiply` is `C = A·B` with a broadcast-FMA micro-kernel (6×32 on AVX-512 — chosen on
-  `Avx512F.IsSupported`, not `Vector512.IsHardwareAccelerated`, which is false on many Xeons — and
-  4×16 on 256-bit). Do not go back to a dot-product (`A·Bᵀ`) kernel: with head dim 64 the horizontal
-  sums dominated attention.
-- Parallelism: linears split into (96-token block × 32-column panel) tasks; attention into
-  (head × 48-query block) tasks; LayerNorm/GELU split only for long sequences.
-- Benchmark after warm-up (tiered JIT) and with ORT spinning disabled; the bench does both.
+Measure before and after any change to the engine; the VM-class machines this runs on are noisy
+(±10%), so repeat runs. Every mode of `samples/Rampart.Bench` first prints the machine and a
+calibration (GEMM GFLOPS best/median, memory read/copy GB/s, CPU steal). Compare a result only with
+one whose calibration is in the same band; `--env` prints just that block. Modes:
+default (sweep 32–512 tokens, C# vs ORT, 1 thread and all cores), `--single` / `--multi` (one pair),
+`--avx512-ab` (C# with `DOTNET_EnableAVX512=0`, then default, in child processes; on .NET 10 the
+per-ISA `DOTNET_EnableAVX512F` is ignored), `--profile [--short] [--single]` (time per stage),
+`--gemm` / `--attention` (kernel throughput), `--alloc [--single]` and `--alloc-parts` (bytes per call).
+
+- **Compare engines in one process, interleaved** (what the default mode does), never in separate
+  runs: the VM gets rescheduled between runs, and a 10% shift would read as a win or a regression.
+  Re-publish `BENCHMARK-RESULT.md` when the numbers move.
+- **Weights stay 4-bit** (~5 MB, cache-resident), permuted at load into panel order — bit-exact, not
+  re-quantized (`GemmTests.PanelOrderedWeightsDecodeToTheShippedNibbles`). Expanding them to float
+  (42 MB) was tried and is slower: it no longer fits the L3 and streams from DRAM on every call.
+- **`Gemm.Multiply`** is `C = A·B` with a broadcast-FMA micro-kernel specialised per row count by a
+  generic struct parameter (12×32 on AVX-512 — chosen on `Avx512F.IsSupported`, not
+  `Vector512.IsHardwareAccelerated`, which is false on many Xeons — and 6×16 on 256-bit). Column
+  remainders run the vector kernel on a zero-padded panel. Do not go back to a dot-product (`A·Bᵀ`)
+  kernel (horizontal sums), and do not fuse an epilogue with many constants (GELU) into the kernel:
+  the hoisted constants push the 24 accumulators into spills.
+- **Attention never materialises `[heads, T, T]`** except for a trace that captures tensors; each task
+  works in a pooled L2-sized scratch. Writing the full tensor made the scores GEMM memory-bound
+  (23 GFLOPS instead of 95). Head dim is 32.
+- **Parallelism** goes through `Parallelism.For` and a struct `IParallelJob` — never `Parallel.For`
+  with a lambda: a lambda that captures a method-scope variable allocates its closure on every call,
+  even when the parallel branch is not taken. The pool's workers spin ~0.5 ms before parking; a call
+  that finds the pool busy runs inline. Single-threaded, linears iterate tile-major over all tokens.
+- **Allocation-free hot path**: `PooledList<T>` (pass by `ref`, dispose once) for every scratch
+  buffer; the tokenizer and the NER window path work on spans; per-code-point Unicode folds are cached
+  (`string.Normalize`/`TryNormalize` allocate); `Heuristics` scans the two backtracking rules by hand
+  (`HeuristicsScannerTests` fuzzes them against the regexes). New code on these paths should keep
+  `--alloc` at 0 B for `ComputeLogits` and only result objects for the pipeline.
+- Benchmark after a time-based warm-up (the tiered JIT recompiles in the background for a while), and
+  time with `Stopwatch.GetTimestamp` rather than `StartNew` (a `Stopwatch` is 40 B, charged to the
+  engine under test). The bench does both.
 
 ## Licensing
 

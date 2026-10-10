@@ -10,17 +10,23 @@ namespace Rampart.Model;
 public sealed class RampartModelOptions
 {
     /// <summary>
-    /// Keep the linear weights in their shipped 4-bit form (~5 MB) and dequantize them tile by tile
-    /// on every forward pass, instead of expanding them once at load into float32 (~42 MB). Results
-    /// are identical; expanded weights are faster, markedly so for short inputs.
+    /// Cores one forward pass may use. Defaults to all of them; 1 runs every kernel on the calling
+    /// thread, which suits a server that already runs many requests in parallel.
     /// </summary>
-    public bool KeepWeightsQuantized { get; init; }
+    public int MaxDegreeOfParallelism { get; init; } = Environment.ProcessorCount;
 }
 
 /// <summary>Receives every intermediate tensor of a forward pass, named as in the ONNX graph.</summary>
 internal interface IForwardTrace
 {
     void Record(string onnxName, ReadOnlySpan<float> data);
+
+    /// <summary>
+    /// False for a trace that only wants to know when each stage finishes (a profiler): the pass then
+    /// runs exactly as untraced — fused GELU, no materialized attention probabilities — and the
+    /// affected trace points receive empty spans.
+    /// </summary>
+    bool CapturesTensors => true;
 }
 
 /// <summary>
@@ -37,6 +43,9 @@ public sealed class RampartModel
 
     private readonly RampartWeights _weights;
 
+    internal RampartWeights Weights => _weights;
+    private readonly int _parallelism;
+
     /// <summary>The encoder configuration (from the shipped <c>config.json</c>).</summary>
     public RampartConfig Config => _weights.Config;
 
@@ -49,8 +58,9 @@ public sealed class RampartModel
     /// <summary>Maximum sequence length, including <c>[CLS]</c> and <c>[SEP]</c>.</summary>
     public int MaxSequenceLength => _weights.Config.MaxPositionEmbeddings;
 
-    private RampartModel(RampartWeights weights, WordPieceTokenizer tokenizer)
+    private RampartModel(RampartWeights weights, WordPieceTokenizer tokenizer, int parallelism)
     {
+        _parallelism = Math.Max(1, parallelism);
         _weights = weights;
         Tokenizer = tokenizer;
     }
@@ -71,10 +81,9 @@ public sealed class RampartModel
         var config = RampartConfig.Parse(configJson);
         var onnx = OnnxModel.Parse(onnxModel);
         var weights = RampartWeights.Bind(onnx, config);
-        if (options?.KeepWeightsQuantized != true) weights.ExpandWeights();
         var tokenizer = WordPieceTokenizer.FromVocab(vocabTxt);
         if (tokenizer.VocabularySize != config.VocabSize) throw new InvalidDataException("vocab.txt does not match config vocab_size.");
-        return new RampartModel(weights, tokenizer);
+        return new RampartModel(weights, tokenizer, options?.MaxDegreeOfParallelism ?? Environment.ProcessorCount);
     }
 
     /// <summary>Loads a model from a directory laid out like the Hugging Face repository.</summary>
@@ -98,14 +107,30 @@ public sealed class RampartModel
     /// </summary>
     public float[] ComputeLogits(ReadOnlySpan<int> inputIds) => ComputeLogits(inputIds, trace: null);
 
+    /// <summary>
+    /// As <see cref="ComputeLogits(ReadOnlySpan{int})"/>, writing into <paramref name="logits"/>
+    /// (at least <c>ids.Length × Labels.Count</c>): with every intermediate buffer pooled, the call
+    /// allocates nothing.
+    /// </summary>
+    public void ComputeLogits(ReadOnlySpan<int> inputIds, Span<float> logits) => ComputeLogits(inputIds, logits, trace: null);
+
     internal float[] ComputeLogits(ReadOnlySpan<int> inputIds, IForwardTrace? trace)
+    {
+        if (inputIds.IsEmpty) return [];
+        var logits = new float[inputIds.Length * _weights.Config.Labels.Count];
+        ComputeLogits(inputIds, logits, trace);
+        return logits;
+    }
+
+    internal void ComputeLogits(ReadOnlySpan<int> inputIds, Span<float> logits, IForwardTrace? trace)
     {
         var cfg = _weights.Config;
         int tokens = inputIds.Length;
         int hiddenSize = cfg.HiddenSize;
         int interSize = cfg.IntermediateSize;
         int labels = cfg.Labels.Count;
-        if (tokens == 0) return [];
+        if (tokens == 0) return;
+        if (logits.Length < tokens * labels) throw new ArgumentException("Logits buffer is smaller than tokens x labels.", nameof(logits));
         if (tokens > cfg.MaxPositionEmbeddings)
             throw new ArgumentException($"Sequence of {tokens} tokens exceeds the model maximum of {cfg.MaxPositionEmbeddings}.", nameof(inputIds));
 
@@ -119,14 +144,17 @@ public sealed class RampartModel
         var context = pool.Rent(th);
         var dense = pool.Rent(th);
         var inter = pool.Rent(tokens * interSize);
-        var probs = pool.Rent(cfg.NumAttentionHeads * tokens * tokens);
+        // The full [heads, tokens, tokens] probabilities exist only for a trace; otherwise each attention
+        // task keeps its slice in an L2-sized scratch buffer.
+        bool capture = trace?.CapturesTensors == true;
+        var probs = capture ? pool.Rent(cfg.NumAttentionHeads * tokens * tokens) : null;
         try
         {
             var h = hidden.AsSpan(0, th);
             Embed(inputIds, h);
             trace?.Record(OnnxNames.EmbeddingSum, h);
             var en = _weights.EmbeddingNorm;
-            Kernels.LayerNorm(h, tokens, en.Gamma, en.Beta, en.Epsilon);
+            Kernels.LayerNorm(h, tokens, en.Gamma, en.Beta, en.Epsilon, _parallelism);
             trace?.Record(OnnxNames.EmbeddingNorm, h);
 
             for (int l = 0; l < _weights.Layers.Length; l++)
@@ -135,45 +163,51 @@ public sealed class RampartModel
                 var qs = q.AsSpan(0, th);
                 var ks = k.AsSpan(0, th);
                 var vs = v.AsSpan(0, th);
-                layer.Query.Forward(h, tokens, qs);
-                layer.Key.Forward(h, tokens, ks);
-                layer.Value.Forward(h, tokens, vs);
+                layer.Query.Forward(h, tokens, qs, _parallelism);
+                layer.Key.Forward(h, tokens, ks, _parallelism);
+                layer.Value.Forward(h, tokens, vs, _parallelism);
                 trace?.Record(OnnxNames.Query(l), qs);
                 trace?.Record(OnnxNames.Key(l), ks);
                 trace?.Record(OnnxNames.Value(l), vs);
 
                 var ctx = context.AsSpan(0, th);
-                var p = probs.AsSpan(0, cfg.NumAttentionHeads * tokens * tokens);
+                var p = probs is null ? default : probs.AsSpan(0, cfg.NumAttentionHeads * tokens * tokens);
                 Attention(qs, ks, vs, tokens, p, ctx);
                 trace?.Record(OnnxNames.AttentionProbs(l), p);
                 trace?.Record(OnnxNames.Context(l), ctx);
 
                 // Post-norm residual: LayerNorm(dense(ctx) + h).
                 var d = dense.AsSpan(0, th);
-                layer.AttentionOutput.Forward(ctx, tokens, d);
+                layer.AttentionOutput.Forward(ctx, tokens, d, _parallelism);
                 trace?.Record(OnnxNames.AttentionDense(l), d);
                 var a = attnOut.AsSpan(0, th);
-                TensorPrimitives.Add(d, h, a);
-                Kernels.LayerNorm(a, tokens, layer.AttentionNorm.Gamma, layer.AttentionNorm.Beta, layer.AttentionNorm.Epsilon);
+                Kernels.AddLayerNorm(d, h, a, tokens, layer.AttentionNorm.Gamma, layer.AttentionNorm.Beta, layer.AttentionNorm.Epsilon, _parallelism);
                 trace?.Record(OnnxNames.AttentionNorm(l), a);
 
                 var i = inter.AsSpan(0, tokens * interSize);
-                layer.Intermediate.Forward(a, tokens, i);
-                trace?.Record(OnnxNames.IntermediateDense(l), i);
-                Kernels.Gelu(i);
-                trace?.Record(OnnxNames.IntermediateGelu(l), i);
+                if (!capture)
+                {
+                    layer.Intermediate.Forward(a, tokens, i, _parallelism);
+                    Kernels.Gelu(i, _parallelism);
+                    trace?.Record(OnnxNames.IntermediateGelu(l), i);
+                }
+                else
+                {
+                    layer.Intermediate.Forward(a, tokens, i, _parallelism);
+                    trace!.Record(OnnxNames.IntermediateDense(l), i);
+                    Kernels.Gelu(i, _parallelism);
+                    trace.Record(OnnxNames.IntermediateGelu(l), i);
+                }
 
-                layer.Output.Forward(i, tokens, d);
+                layer.Output.Forward(i, tokens, d, _parallelism);
                 trace?.Record(OnnxNames.OutputDense(l), d);
-                TensorPrimitives.Add(d, a, h);
-                Kernels.LayerNorm(h, tokens, layer.OutputNorm.Gamma, layer.OutputNorm.Beta, layer.OutputNorm.Epsilon);
+                Kernels.AddLayerNorm(d, a, h, tokens, layer.OutputNorm.Gamma, layer.OutputNorm.Beta, layer.OutputNorm.Epsilon, _parallelism);
                 trace?.Record(OnnxNames.OutputNorm(l), h);
             }
 
-            var logits = new float[tokens * labels];
-            _weights.Classifier.Forward(h, tokens, logits);
-            trace?.Record(OnnxNames.Logits, logits);
-            return logits;
+            var output = logits[..(tokens * labels)];
+            _weights.Classifier.Forward(h, tokens, output, _parallelism);
+            trace?.Record(OnnxNames.Logits, output);
         }
         finally
         {
@@ -185,7 +219,7 @@ public sealed class RampartModel
             pool.Return(context);
             pool.Return(dense);
             pool.Return(inter);
-            pool.Return(probs);
+            if (probs is not null) pool.Return(probs);
         }
     }
 
@@ -209,82 +243,123 @@ public sealed class RampartModel
     /// <summary>
     /// Multi-head self-attention over an unpadded sequence. Like the exported graph, Q and K are each
     /// scaled by <c>√(1/√d)</c> before their product, rather than the scores by <c>1/√d</c>.
-    /// <paramref name="probs"/> receives the softmax weights laid out <c>[head, query, key]</c>.
+    /// <paramref name="probs"/>, when not empty, receives the softmax weights laid out <c>[head, query, key]</c>.
     /// <para>
     /// Work is split into (head, block of query rows) tasks: a task's scores, softmax and weighted sum
     /// of V all happen while its slice of the probabilities is still in cache.
     /// </para>
     /// </summary>
-    private unsafe void Attention(Span<float> q, Span<float> k, ReadOnlySpan<float> v, int tokens, Span<float> probs, Span<float> context)
+    private unsafe void Attention(Span<float> q, ReadOnlySpan<float> k, ReadOnlySpan<float> v, int tokens, Span<float> probs, Span<float> context)
     {
         var cfg = _weights.Config;
         int heads = cfg.NumAttentionHeads;
         int width = cfg.HiddenSize;
         int headDim = width / heads;
         float scale = MathF.Sqrt(1f / MathF.Sqrt(headDim));
-        TensorPrimitives.Multiply(q, scale, q);
-        TensorPrimitives.Multiply(k, scale, k);
 
-        // K transposed per head: kt[h][d][j] = k[j][h·d + d], the B operand of scores = Q_h · K_hᵀ.
-        var kt = ArrayPool<float>.Shared.Rent(tokens * width);
+        // Per-head panels, packed once per layer and shared by every query block of the head:
+        // kt[h] = (K_h · scale)ᵀ, headDim × tokens — the B operand of scores = Q_h · K_hᵀ;
+        // vh[h] = V_h, tokens × headDim contiguous — the B operand of context = P · V_h.
+        int panel = tokens * headDim;
+        var kt = ArrayPool<float>.Shared.Rent(heads * panel);
+        var vh = ArrayPool<float>.Shared.Rent(heads * panel);
         try
         {
-            for (int j = 0; j < tokens; j++)
+            int degree = _parallelism <= 1 || (long)tokens * tokens * width < 200_000 ? 1 : _parallelism;
+            fixed (float* pq0 = q)
+            fixed (float* pk0 = k)
+            fixed (float* pv0 = v)
+            fixed (float* pkt = kt)
+            fixed (float* pvh = vh)
             {
-                var krow = k.Slice(j * width, width);
-                for (int h = 0; h < heads; h++)
-                {
-                    var src = krow.Slice(h * headDim, headDim);
-                    int dst = h * headDim * tokens + j;
-                    for (int d = 0; d < headDim; d++) kt[dst + d * tokens] = src[d];
-                }
+                var pack = new PackJob((nint)pq0, (nint)pk0, (nint)pv0, (nint)pkt, (nint)pvh, tokens, width, headDim, scale);
+                Parallelism.For(heads, degree, ref pack);
             }
 
-            int rowBlocks = (tokens + QueryBlock - 1) / QueryBlock;
-            int tasks = heads * rowBlocks;
+            int block = _parallelism <= 1 ? QueryBlockSerial : QueryBlockParallel;
+            int rowBlocks = (tokens + block - 1) / block;
             fixed (float* pq = q)
-            fixed (float* pv = v)
             fixed (float* pp = probs)
             fixed (float* pc = context)
             fixed (float* pk = kt)
+            fixed (float* pv = vh)
             {
-                nint qp = (nint)pq, vp = (nint)pv, ppp = (nint)pp, cp = (nint)pc, ktp = (nint)pk;
-                int len = tokens * width;
-
-                void Task(int task)
-                {
-                    int head = task / rowBlocks;
-                    int i0 = task % rowBlocks * QueryBlock;
-                    int rows = Math.Min(QueryBlock, tokens - i0);
-                    int off = head * headDim;
-                    var qs = new ReadOnlySpan<float>((void*)qp, len);
-                    var vs = new ReadOnlySpan<float>((void*)vp, len);
-                    var cs = new Span<float>((void*)cp, len);
-                    var kth = new ReadOnlySpan<float>((void*)(ktp + (nint)head * headDim * tokens * sizeof(float)), headDim * tokens);
-                    var ps = new Span<float>((void*)(ppp + ((nint)head * tokens + i0) * tokens * sizeof(float)), rows * tokens);
-
-                    Gemm.Multiply(qs[(i0 * width + off)..], width, kth, tokens, ps, tokens, rows, tokens, headDim);
-                    for (int i = 0; i < rows; i++) Kernels.SoftmaxInPlace(ps.Slice(i * tokens, tokens));
-                    // context rows = P · V_h, reading V_h in place (row stride = hidden width).
-                    Gemm.Multiply(ps, tokens, vs[off..], width, cs[(i0 * width + off)..], width, rows, headDim, tokens);
-                }
-
-                if ((long)tokens * tokens * width < 200_000)
-                {
-                    for (int task = 0; task < tasks; task++) Task(task);
-                }
-                else
-                {
-                    Parallel.For(0, tasks, Task);
-                }
+                var job = new AttentionJob((nint)pq, (nint)pk, (nint)pv, probs.IsEmpty ? 0 : (nint)pp, (nint)pc, tokens, width, headDim, block, rowBlocks);
+                Parallelism.For(heads * rowBlocks, degree, ref job);
             }
         }
         finally
         {
             ArrayPool<float>.Shared.Return(kt);
+            ArrayPool<float>.Shared.Return(vh);
         }
     }
 
-    /// <summary>Query rows per attention task (a multiple of the GEMM's 6-row block).</summary>
-    private const int QueryBlock = 48;
+    /// <summary>Query rows per attention task (multiples of the GEMM's 12-row block): one core keeps a
+    /// larger slice of probabilities in L2; several cores want more, smaller tasks.</summary>
+    private const int QueryBlockSerial = 96, QueryBlockParallel = 48;
+
+    /// <summary>
+    /// One head's operand packing: Q_h scaled in place, (K_h · scale)ᵀ into its <c>headDim × tokens</c>
+    /// panel and V_h into its contiguous <c>tokens × headDim</c> panel. Heads touch disjoint memory.
+    /// </summary>
+    private readonly unsafe struct PackJob(nint q, nint k, nint v, nint kt, nint vh, int tokens, int width, int headDim, float scale) : IParallelJob
+    {
+        public void Run(int from, int to)
+        {
+            int panel = tokens * headDim;
+            var qs = new Span<float>((void*)q, tokens * width);
+            var ks = new ReadOnlySpan<float>((void*)k, tokens * width);
+            var vs = new ReadOnlySpan<float>((void*)v, tokens * width);
+            for (int h = from; h < to; h++)
+            {
+                var kth = new Span<float>((void*)(kt + (nint)h * panel * sizeof(float)), panel);
+                var vhh = new Span<float>((void*)(vh + (nint)h * panel * sizeof(float)), panel);
+                int off = h * headDim;
+                for (int j = 0; j < tokens; j++)
+                {
+                    var qrow = qs.Slice(j * width + off, headDim);
+                    TensorPrimitives.Multiply(qrow, scale, qrow);
+                    var krow = ks.Slice(j * width + off, headDim);
+                    for (int d = 0; d < headDim; d++) kth[d * tokens + j] = krow[d] * scale;
+                    vs.Slice(j * width + off, headDim).CopyTo(vhh.Slice(j * headDim, headDim));
+                }
+            }
+        }
+    }
+
+    /// <summary>One (head, block of queries) of attention: scores, softmax, weighted sum of V.</summary>
+    private readonly unsafe struct AttentionJob(nint q, nint kt, nint vh, nint probs, nint context, int tokens, int width, int headDim, int block, int rowBlocks) : IParallelJob
+    {
+        public void Run(int from, int to)
+        {
+            int len = tokens * width, panel = tokens * headDim;
+            var qs = new ReadOnlySpan<float>((void*)q, len);
+            var cs = new Span<float>((void*)context, len);
+            var scratch = probs == 0 ? ArrayPool<float>.Shared.Rent(block * tokens) : null;
+            try
+            {
+            for (int task = from; task < to; task++)
+            {
+                int head = task / rowBlocks;
+                int i0 = task % rowBlocks * block;
+                int rows = Math.Min(block, tokens - i0);
+                int off = head * headDim;
+                var kth = new ReadOnlySpan<float>((void*)(kt + (nint)head * panel * sizeof(float)), panel);
+                var vhh = new ReadOnlySpan<float>((void*)(vh + (nint)head * panel * sizeof(float)), panel);
+                var ps = scratch is not null
+                    ? scratch.AsSpan(0, rows * tokens)
+                    : new Span<float>((void*)(probs + ((nint)head * tokens + i0) * tokens * sizeof(float)), rows * tokens);
+
+                Gemm.Multiply(qs[(i0 * width + off)..], width, kth, tokens, ps, tokens, rows, tokens, headDim);
+                for (int i = 0; i < rows; i++) Kernels.SoftmaxInPlace(ps.Slice(i * tokens, tokens));
+                Gemm.Multiply(ps, tokens, vhh, headDim, cs[(i0 * width + off)..], width, rows, headDim, tokens);
+            }
+            }
+            finally
+            {
+                if (scratch is not null) ArrayPool<float>.Shared.Return(scratch);
+            }
+        }
+    }
 }

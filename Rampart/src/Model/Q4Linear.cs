@@ -1,5 +1,4 @@
 using System.Buffers;
-using System.Numerics.Tensors;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
@@ -9,64 +8,34 @@ using System.Runtime.Intrinsics.X86;
 namespace Rampart.Model;
 
 /// <summary>
-/// A linear layer whose weight is stored in ONNX <c>com.microsoft.MatMulNBits</c> form: 4-bit
-/// unsigned values packed two per byte (low nibble first), grouped along K into blocks of
-/// <see cref="BlockSize"/> with one float scale (and an optional 4-bit zero point, default 8) per block.
+/// A linear layer whose weight ships in ONNX <c>com.microsoft.MatMulNBits</c> form: 4-bit unsigned
+/// values, grouped along K into blocks of <see cref="BlockSize"/> with one float scale (and an
+/// optional 4-bit zero point, default 8) per block and output row.
 /// <para>
-/// The packed weights are kept as shipped (≈4.5 bits per weight). A forward pass dequantizes a tile of
-/// output rows (SIMD nibble unpack) into a small scratch buffer once and reuses it for every token in
-/// the sequence, so the dequantization cost is amortised over the sequence, and multiplies with the
-/// register-blocked <see cref="Gemm"/> kernel. Tiles run in parallel.
+/// At load the 4-bit values are <em>permuted</em> — not re-quantized — into panel order: for each tile
+/// of 32 output rows and each k, the 32 nibbles sit in 16 consecutive bytes, and the scales and zero
+/// points of a tile are stored transposed. A forward pass then dequantizes one tile at a time, a few
+/// SIMD instructions per k, into a <c>K × 32</c> float panel (≤ 196 KB, cache-resident) and multiplies
+/// every token against it with the <see cref="Gemm"/> kernel. The weights stay at ~4.5 bits each
+/// (≈5 MB for the whole model, so they stay in the last-level cache between calls), and each panel is
+/// dequantized once per call however long the sequence.
 /// </para>
 /// </summary>
 internal sealed class Q4Linear
 {
-    private const int RowTile = 32;
-
-    /// <summary>Lookup from a packed byte to its two unsigned nibbles (low, high) as floats.</summary>
-    private static readonly float[] NibblePairs = BuildNibblePairs();
+    /// <summary>Output rows per panel: one <see cref="Gemm"/> column block on 512-bit hardware.</summary>
+    public const int Tile = 32;
 
     public int N { get; }
     public int K { get; }
     public int BlockSize { get; }
     public int BlocksPerRow { get; }
-    private readonly byte[] _packed;      // [N, BlocksPerRow, BlockSize / 2]
-    private readonly float[] _scales;     // [N, BlocksPerRow]
-    private readonly byte[]? _zeroPoints; // [N, ceil(BlocksPerRow / 2)] packed 4-bit, or null -> 8
-    private readonly float[] _bias;       // [N]
-    private float[]? _panels;             // [tiles][K][RowTile]: dequantized, transposed; null → dequantize per call
+    public int Tiles { get; }
 
-    /// <summary>True when the weights have been expanded into float panels (see <see cref="ExpandWeights"/>).</summary>
-    public bool IsExpanded => _panels is not null;
-
-    /// <summary>
-    /// Dequantizes every weight once into the transposed float panels the GEMM consumes, trading
-    /// 8× the weight memory (4 bytes instead of ~4.5 bits per weight) for not dequantizing on every call.
-    /// </summary>
-    public void ExpandWeights()
-    {
-        if (_panels is not null) return;
-        int tiles = (N + RowTile - 1) / RowTile;
-        var panels = new float[tiles * K * RowTile];
-        Parallel.For(0, tiles, tile =>
-        {
-            var row = new float[K];
-            var panel = panels.AsSpan(tile * K * RowTile, K * RowTile);
-            FillPanel(tile, panel, row);
-        });
-        _panels = panels;
-    }
-
-    private void FillPanel(int tile, Span<float> panel, Span<float> row)
-    {
-        int n0 = tile * RowTile;
-        int rows = Math.Min(RowTile, N - n0);
-        for (int r = 0; r < rows; r++)
-        {
-            DequantizeRow(n0 + r, row);
-            for (int k = 0; k < K; k++) panel[k * RowTile + r] = row[k];
-        }
-    }
+    private readonly byte[] _nibbles; // [Tiles][K][Tile / 2]: byte r/2 of (tile, k) holds row r (low) and r + 1 (high)
+    private readonly float[] _scales; // [Tiles][BlocksPerRow][Tile], 0 for padding rows
+    private readonly float[] _zeros;  // [Tiles][BlocksPerRow][Tile]
+    private readonly float[] _bias;   // [N]
 
     public Q4Linear(int n, int k, int blockSize, byte[] packed, float[] scales, byte[]? zeroPoints, float[] bias)
     {
@@ -75,186 +44,191 @@ internal sealed class Q4Linear
         K = k;
         BlockSize = blockSize;
         BlocksPerRow = (k + blockSize - 1) / blockSize;
-        if (packed.Length != n * BlocksPerRow * (blockSize / 2)) throw new InvalidDataException("MatMulNBits weight has an unexpected size.");
+        Tiles = (n + Tile - 1) / Tile;
+        int bytesPerBlock = blockSize / 2;
+        if (packed.Length != n * BlocksPerRow * bytesPerBlock) throw new InvalidDataException("MatMulNBits weight has an unexpected size.");
         if (scales.Length != n * BlocksPerRow) throw new InvalidDataException("MatMulNBits scales have an unexpected size.");
         if (bias.Length != n) throw new InvalidDataException("Linear bias has an unexpected size.");
-        _packed = packed;
-        _scales = scales;
-        _zeroPoints = zeroPoints;
         _bias = bias;
-    }
 
-    /// <summary>Dequantizes output row <paramref name="row"/> (K weights) into <paramref name="destination"/>.</summary>
-    public void DequantizeRow(int row, Span<float> destination)
-    {
-        var bytesPerBlock = BlockSize / 2;
-        var packedRow = _packed.AsSpan(row * BlocksPerRow * bytesPerBlock, BlocksPerRow * bytesPerBlock);
-        var scales = _scales.AsSpan(row * BlocksPerRow, BlocksPerRow);
-        bool simd = BlockSize == 32 && (Sse2.IsSupported || AdvSimd.Arm64.IsSupported);
-        ref var pairs = ref MemoryMarshal.GetArrayDataReference(NibblePairs);
-
-        for (int b = 0; b < BlocksPerRow; b++)
+        // Permute into panel order. Padding rows of the last tile get scale 0, so they dequantize to 0.
+        _nibbles = new byte[Tiles * K * (Tile / 2)];
+        _scales = new float[Tiles * BlocksPerRow * Tile];
+        _zeros = new float[Tiles * BlocksPerRow * Tile];
+        _zeros.AsSpan().Fill(8f);
+        int zeroStride = (BlocksPerRow + 1) / 2;
+        for (int row = 0; row < n; row++)
         {
-            float scale = scales[b];
-            float zero = ZeroPoint(row, b);
-            var block = packedRow.Slice(b * bytesPerBlock, bytesPerBlock);
-            int kBase = b * BlockSize;
-            int count = Math.Min(BlockSize, K - kBase);
-            var dst = destination.Slice(kBase, count);
-
-            if (simd && count == 32)
+            int tile = row / Tile, r = row % Tile;
+            for (int b = 0; b < BlocksPerRow; b++)
             {
-                DequantizeBlock32(block, zero, scale, dst);
-                continue;
+                int at = (tile * BlocksPerRow + b) * Tile + r;
+                _scales[at] = scales[row * BlocksPerRow + b];
+                if (zeroPoints is not null)
+                {
+                    byte z = zeroPoints[row * zeroStride + (b >> 1)];
+                    _zeros[at] = (b & 1) == 0 ? z & 0x0F : z >> 4;
+                }
             }
-            for (int i = 0; i < count; i += 2)
+            for (int kk = 0; kk < k; kk++)
             {
-                int p = block[i >> 1] * 2;
-                dst[i] = (Unsafe.Add(ref pairs, p) - zero) * scale;
-                if (i + 1 < count) dst[i + 1] = (Unsafe.Add(ref pairs, p + 1) - zero) * scale;
+                int b = kk / blockSize, i = kk % blockSize;
+                byte src = packed[(row * BlocksPerRow + b) * bytesPerBlock + (i >> 1)];
+                int q = (i & 1) == 0 ? src & 0x0F : src >> 4;
+                ref byte dst = ref _nibbles[(tile * K + kk) * (Tile / 2) + (r >> 1)];
+                dst |= (byte)((r & 1) == 0 ? q : q << 4);
             }
         }
+    }
+
+    /// <summary>The dequantized weight <c>W[row, k]</c> as ONNX Runtime computes it: <c>(q - zero) · scale</c>.</summary>
+    public float Weight(int row, int k)
+    {
+        int tile = row / Tile, r = row % Tile;
+        byte packed = _nibbles[(tile * K + k) * (Tile / 2) + (r >> 1)];
+        int q = (r & 1) == 0 ? packed & 0x0F : packed >> 4;
+        int at = (tile * BlocksPerRow + k / BlockSize) * Tile + r;
+        return (q - _zeros[at]) * _scales[at];
     }
 
     /// <summary>
-    /// 16 packed bytes → 32 floats: split the nibbles, interleave them back into K order (low nibble
-    /// first), widen to float and apply <c>(q - zero) · scale</c> — the same two roundings as the scalar path.
+    /// Dequantizes tile <paramref name="tile"/> into <paramref name="panel"/> laid out <c>[K][Tile]</c>:
+    /// panel row k is <c>W[tile·32 .. tile·32 + 31, k]</c>, the B operand of <c>y = x · B</c>.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void DequantizeBlock32(ReadOnlySpan<byte> block, float zero, float scale, Span<float> dst)
+    public void DequantizeTile(int tile, Span<float> panel)
     {
-        var bytes = Vector128.Create(block);
-        var lo = bytes & Vector128.Create((byte)0x0F);
-        var hi = Vector128.ShiftRightLogical(bytes, 4);
-        Vector128<byte> first, second;
-        if (Sse2.IsSupported)
+        if (panel.Length < K * Tile) throw new ArgumentException("Panel is smaller than K x Tile.", nameof(panel));
+        ref byte nib = ref _nibbles[tile * K * (Tile / 2)];
+        ref float sc = ref _scales[tile * BlocksPerRow * Tile];
+        ref float ze = ref _zeros[tile * BlocksPerRow * Tile];
+        ref float dst = ref MemoryMarshal.GetReference(panel);
+        bool x86 = Sse2.IsSupported, arm = AdvSimd.Arm64.IsSupported;
+
+        for (int b = 0; b < BlocksPerRow; b++)
         {
-            first = Sse2.UnpackLow(lo, hi);
-            second = Sse2.UnpackHigh(lo, hi);
-        }
-        else
-        {
-            first = AdvSimd.Arm64.ZipLow(lo, hi);
-            second = AdvSimd.Arm64.ZipHigh(lo, hi);
+            int k0 = b * BlockSize, k1 = Math.Min(K, k0 + BlockSize);
+            nuint o = (nuint)(b * Tile);
+            if (!x86 && !arm)
+            {
+                for (int k = k0; k < k1; k++)
+                {
+                    for (int r = 0; r < Tile; r++)
+                    {
+                        byte packed = Unsafe.Add(ref nib, k * (Tile / 2) + (r >> 1));
+                        int q = (r & 1) == 0 ? packed & 0x0F : packed >> 4;
+                        Unsafe.Add(ref dst, k * Tile + r) = (q - Unsafe.Add(ref ze, o + (nuint)r)) * Unsafe.Add(ref sc, o + (nuint)r);
+                    }
+                }
+                continue;
+            }
+
+            if (Avx512F.IsSupported)
+            {
+                var z0 = Vector512.LoadUnsafe(ref ze, o);
+                var z1 = Vector512.LoadUnsafe(ref ze, o + 16);
+                var s0 = Vector512.LoadUnsafe(ref sc, o);
+                var s1 = Vector512.LoadUnsafe(ref sc, o + 16);
+                for (int k = k0; k < k1; k++)
+                {
+                    var (first, second) = Unpack(Vector128.LoadUnsafe(ref nib, (nuint)(k * (Tile / 2))), x86);
+                    var w0 = Avx512F.ConvertToVector512Single(Avx512F.ConvertToVector512Int32(first));
+                    var w1 = Avx512F.ConvertToVector512Single(Avx512F.ConvertToVector512Int32(second));
+                    ((w0 - z0) * s0).StoreUnsafe(ref dst, (nuint)(k * Tile));
+                    ((w1 - z1) * s1).StoreUnsafe(ref dst, (nuint)(k * Tile + 16));
+                }
+            }
+            else
+            {
+                for (int k = k0; k < k1; k++)
+                {
+                    var (first, second) = Unpack(Vector128.LoadUnsafe(ref nib, (nuint)(k * (Tile / 2))), x86);
+                    WidenStore(first, ref ze, ref sc, o, ref dst, (nuint)(k * Tile));
+                    WidenStore(second, ref ze, ref sc, o + 16, ref dst, (nuint)(k * Tile + 16));
+                }
+            }
         }
 
-        var z = Vector128.Create(zero);
-        var s = Vector128.Create(scale);
-        ref float d = ref MemoryMarshal.GetReference(dst);
-        WidenStore(first, z, s, ref d, 0);
-        WidenStore(second, z, s, ref d, 16);
-
-        static void WidenStore(Vector128<byte> v, Vector128<float> z, Vector128<float> s, ref float d, nuint offset)
+        static void WidenStore(Vector128<byte> v, ref float ze, ref float sc, nuint o, ref float d, nuint at)
         {
             var (u0, u1) = Vector128.Widen(v);
             var (w0, w1) = Vector128.Widen(u0);
             var (w2, w3) = Vector128.Widen(u1);
-            ((Vector128.ConvertToSingle(w0.AsInt32()) - z) * s).StoreUnsafe(ref d, offset);
-            ((Vector128.ConvertToSingle(w1.AsInt32()) - z) * s).StoreUnsafe(ref d, offset + 4);
-            ((Vector128.ConvertToSingle(w2.AsInt32()) - z) * s).StoreUnsafe(ref d, offset + 8);
-            ((Vector128.ConvertToSingle(w3.AsInt32()) - z) * s).StoreUnsafe(ref d, offset + 12);
+            ((Vector128.ConvertToSingle(w0.AsInt32()) - Vector128.LoadUnsafe(ref ze, o)) * Vector128.LoadUnsafe(ref sc, o)).StoreUnsafe(ref d, at);
+            ((Vector128.ConvertToSingle(w1.AsInt32()) - Vector128.LoadUnsafe(ref ze, o + 4)) * Vector128.LoadUnsafe(ref sc, o + 4)).StoreUnsafe(ref d, at + 4);
+            ((Vector128.ConvertToSingle(w2.AsInt32()) - Vector128.LoadUnsafe(ref ze, o + 8)) * Vector128.LoadUnsafe(ref sc, o + 8)).StoreUnsafe(ref d, at + 8);
+            ((Vector128.ConvertToSingle(w3.AsInt32()) - Vector128.LoadUnsafe(ref ze, o + 12)) * Vector128.LoadUnsafe(ref sc, o + 12)).StoreUnsafe(ref d, at + 12);
         }
     }
 
+    /// <summary>16 packed bytes → the 32 nibbles in row order (low nibble first), as two byte vectors.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private float ZeroPoint(int row, int block)
+    private static (Vector128<byte> First, Vector128<byte> Second) Unpack(Vector128<byte> bytes, bool x86)
     {
-        if (_zeroPoints is null) return 8f;
-        int stride = (BlocksPerRow + 1) / 2;
-        byte packed = _zeroPoints[row * stride + (block >> 1)];
-        return (block & 1) == 0 ? packed & 0x0F : packed >> 4;
+        var lo = bytes & Vector128.Create((byte)0x0F);
+        var hi = Vector128.ShiftRightLogical(bytes, 4);
+        return x86 ? (Sse2.UnpackLow(lo, hi), Sse2.UnpackHigh(lo, hi)) : (AdvSimd.Arm64.ZipLow(lo, hi), AdvSimd.Arm64.ZipHigh(lo, hi));
     }
 
     /// <summary>
     /// <c>y[t, n] = bias[n] + Σ_k x[t, k] · W[n, k]</c> for a row-major <paramref name="x"/> of
-    /// <paramref name="tokens"/> × <see cref="K"/>; writes <paramref name="tokens"/> × <see cref="N"/> into <paramref name="y"/>.
+    /// <paramref name="tokens"/> × <see cref="K"/>; writes <paramref name="tokens"/> × <see cref="N"/> into
+    /// <paramref name="y"/>. Each tile is dequantized once and multiplied against every token; tiles are
+    /// spread over up to <paramref name="parallelism"/> cores.
     /// </summary>
-    public void Forward(ReadOnlySpan<float> x, int tokens, Span<float> y)
+    public void Forward(ReadOnlySpan<float> x, int tokens, Span<float> y, int parallelism = 1)
     {
         if (x.Length < tokens * K) throw new ArgumentException("Input is smaller than tokens x K.", nameof(x));
         if (y.Length < tokens * N) throw new ArgumentException("Output is smaller than tokens x N.", nameof(y));
+        if (tokens == 0) return;
 
-        int tiles = (N + RowTile - 1) / RowTile;
-        // Tasks are (token block, column tile) pairs, column tile varying fastest, so a worker that takes a
-        // contiguous range of tasks keeps its block of activations in its own L2 while panels stream past.
-        // With 4-bit weights a panel is dequantized per task, so the tokens are not split.
-        int tokenBlock = _panels is null ? tokens : TokenBlock;
-        int blocks = (tokens + tokenBlock - 1) / tokenBlock;
-        int tasks = blocks * tiles;
-
-        if ((long)tokens * N * K < 500_000 || tasks == 1)
+        if (parallelism <= 1 || Tiles == 1 || (long)tokens * N * K < 1_000_000)
         {
-            var scratch = ArrayPool<float>.Shared.Rent((RowTile + 1) * K);
+            var panel = ArrayPool<float>.Shared.Rent(K * Tile);
             try
             {
-                for (int task = 0; task < tasks; task++) ForwardTask(x, tokens, y, task, tiles, tokenBlock, scratch);
+                for (int tile = 0; tile < Tiles; tile++) ForwardTile(x, tokens, y, tile, panel);
             }
             finally
             {
-                ArrayPool<float>.Shared.Return(scratch);
+                ArrayPool<float>.Shared.Return(panel);
             }
             return;
         }
 
-        // Spans cannot be captured by the parallel lambda; pin and pass raw pointers instead.
         unsafe
         {
             fixed (float* px = x)
             fixed (float* py = y)
             {
-                var xp = (nint)px;
-                var yp = (nint)py;
-                int xLen = tokens * K, yLen = tokens * N;
-                Parallel.For(0, tasks,
-                    () => ArrayPool<float>.Shared.Rent((RowTile + 1) * K),
-                    (task, _, scratch) =>
-                    {
-                        var xs = new ReadOnlySpan<float>((void*)xp, xLen);
-                        var ys = new Span<float>((void*)yp, yLen);
-                        ForwardTask(xs, tokens, ys, task, tiles, tokenBlock, scratch);
-                        return scratch;
-                    },
-                    scratch => ArrayPool<float>.Shared.Return(scratch));
+                var job = new TileJob(this, (nint)px, (nint)py, tokens);
+                Parallelism.For(Tiles, parallelism, ref job);
             }
         }
     }
 
-    /// <summary>Tokens per task when the weights are expanded: a multiple of the GEMM's 6-row block.</summary>
-    private const int TokenBlock = 96;
-
-    /// <summary>
-    /// Multiplies one block of tokens against the <c>K × RowTile</c> panel holding weight rows
-    /// <c>[n0, n0 + RowTile)</c> transposed — precomputed, or dequantized into <paramref name="scratch"/> now.
-    /// </summary>
-    private void ForwardTask(ReadOnlySpan<float> x, int tokens, Span<float> y, int task, int tiles, int tokenBlock, float[] scratch)
+    private void ForwardTile(ReadOnlySpan<float> x, int tokens, Span<float> y, int tile, float[] panel)
     {
-        int tile = task % tiles;
-        int t0 = task / tiles * tokenBlock;
-        int count = Math.Min(tokenBlock, tokens - t0);
-        int n0 = tile * RowTile;
-        int rows = Math.Min(RowTile, N - n0);
-        ReadOnlySpan<float> panel;
-        if (_panels is not null)
-        {
-            panel = _panels.AsSpan(tile * K * RowTile, K * RowTile);
-        }
-        else
-        {
-            var p = scratch.AsSpan(0, K * RowTile);
-            FillPanel(tile, p, scratch.AsSpan(K * RowTile, K));
-            panel = p;
-        }
-        Gemm.Multiply(x[(t0 * K)..], K, panel, RowTile, y[(t0 * N + n0)..], N, count, rows, K, _bias.AsSpan(n0, rows));
+        int n0 = tile * Tile;
+        int rows = Math.Min(Tile, N - n0);
+        DequantizeTile(tile, panel);
+        Gemm.Multiply(x, K, panel, Tile, y[n0..], N, tokens, rows, K, _bias.AsSpan(n0, rows));
     }
 
-    private static float[] BuildNibblePairs()
+    private readonly unsafe struct TileJob(Q4Linear linear, nint x, nint y, int tokens) : IParallelJob
     {
-        var table = new float[512];
-        for (int b = 0; b < 256; b++)
+        public void Run(int from, int to)
         {
-            table[2 * b] = b & 0x0F;
-            table[2 * b + 1] = b >> 4;
+            var panel = ArrayPool<float>.Shared.Rent(linear.K * Tile);
+            try
+            {
+                var xs = new ReadOnlySpan<float>((void*)x, tokens * linear.K);
+                var ys = new Span<float>((void*)y, tokens * linear.N);
+                for (int tile = from; tile < to; tile++) linear.ForwardTile(xs, tokens, ys, tile, panel);
+            }
+            finally
+            {
+                ArrayPool<float>.Shared.Return(panel);
+            }
         }
-        return table;
     }
 }

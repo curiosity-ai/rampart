@@ -1,3 +1,5 @@
+using System.Runtime.InteropServices;
+using Rampart.Buffers;
 using Rampart.Detection;
 using Rampart.Model;
 using Rampart.Ner;
@@ -72,11 +74,37 @@ public sealed class RampartAnalyzer
             return heuristic;
         }
 
-        var map = Premask.Apply(text, heuristic);
-        var contextual = new List<PiiSpan>();
-        foreach (var span in _ner.Detect(map.Masked))
+        if (_ner is NerDetector builtIn)
         {
-            if (Premask.Project(span, text, map) is { } projected) contextual.Add(projected);
+            // Allocation-free path: premask into pooled buffers, run the model on the masked span, and
+            // project each model span straight onto the raw text.
+            var map = new PremaskBuffer(text.Length);
+            var spans = new PooledList<NerDetector.NerSpan>(16);
+            try
+            {
+                map.Build(text, CollectionsMarshal.AsSpan(heuristic));
+                builtIn.DetectCore(map.Masked.AsSpan(), ref spans);
+                foreach (var s in spans.AsSpan())
+                {
+                    if (map.TryProject(s.Start, s.End, out int start, out int end))
+                    {
+                        heuristic.Add(new PiiSpan(start, end, s.Label, s.Score, SpanSource.Ner, text.Substring(start, end - start)));
+                    }
+                }
+                return heuristic;
+            }
+            finally
+            {
+                map.Dispose();
+                spans.Dispose();
+            }
+        }
+
+        var result = Premask.Apply(text, heuristic);
+        var contextual = new List<PiiSpan>();
+        foreach (var span in _ner.Detect(result.Masked))
+        {
+            if (Premask.Project(span, text, result) is { } projected) contextual.Add(projected);
         }
         heuristic.AddRange(contextual);
         return heuristic;
