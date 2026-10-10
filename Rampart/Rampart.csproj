@@ -12,6 +12,8 @@
     <PackageTags>PII;NLP;redaction;anonymization;privacy;LLM;NER</PackageTags>
     <PackageLicenseExpression>MIT AND CC-BY-4.0</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageProjectUrl>https://github.com/curiosity-ai/rampart</PackageProjectUrl>
+    <RepositoryType>git</RepositoryType>
   </PropertyGroup>
 
   <ItemGroup>
@@ -22,7 +24,8 @@
     <None Include="..\LICENSE" Pack="true" PackagePath="\" />
     <None Include="..\LICENSE-MODEL" Pack="true" PackagePath="\" />
     <None Include="..\THIRD-PARTY-NOTICES.md" Pack="true" PackagePath="\" />
-    <None Include="..\README.md" Pack="true" PackagePath="\" />
+    <!-- The package readme is the consumer guide with samples; the repository README covers validation and benchmarks. -->
+    <None Include="README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
   <ItemGroup>

@@ -393,7 +393,16 @@ public sealed class HeuristicsScannerTests
     }
 }
 
+/// <summary>
+/// Runs <see cref="AllocationTests"/> on its own. <c>ArrayPool&lt;T&gt;.Shared</c> allocates a fresh array
+/// when concurrent renters have drained its per-core stocks, so measured next to the parity tests a
+/// pass that allocates nothing on its own can read a few kilobytes.
+/// </summary>
+[CollectionDefinition(nameof(AllocationTests), DisableParallelization = true)]
+public sealed class AllocationCollection;
+
 /// <summary>The hot paths allocate nothing once warm (see CLAUDE.md, "Performance and allocation notes").</summary>
+[Collection(nameof(AllocationTests))]
 public sealed class AllocationTests
 {
     private static readonly RampartModel SingleThreaded = RampartModel.Load(new RampartModelOptions { MaxDegreeOfParallelism = 1 });

@@ -1,0 +1,95 @@
+# Builds, tests and publishes the Rampart NuGet package.
+#
+# A push to main runs the test suite (layer-by-layer and end-to-end parity included) and, only if it
+# passes, packs Rampart with a CalVer version (yy.M.<buildId>) and pushes it to nuget.org through the
+# 'nuget-curiosity-org' service connection. Pull request builds run the same build and tests and stop
+# before packing.
+
+variables:
+  project:            './Rampart/Rampart.csproj'
+  testProject:        './tests/Rampart.Tests/Rampart.Tests.csproj'
+  solution:           './Rampart.sln'
+  buildConfiguration: 'Release'
+  targetVersion:      yy.M.$(build.buildId)
+
+trigger:
+  branches:
+    include:
+    - main
+  paths:
+    exclude:
+    - samples
+    - tools
+    - .claude
+    - CLAUDE.md
+
+pr:
+  branches:
+    include:
+    - main
+
+pool:
+  vmImage: 'windows-latest'
+
+steps:
+- checkout: self
+  fetchDepth: 10
+
+- task: PowerShell@2
+  displayName: 'Create CalVer version'
+  inputs:
+    targetType: 'inline'
+    script: |
+      $dottedDate = (Get-Date).ToString("yy.M")
+      $buildID = $($env:BUILD_BUILDID)
+      $modBuildID = [int]$buildID % 65536  # ensure fits in int16
+      $newTargetVersion = "$dottedDate.$modBuildID"
+      Write-Host "##vso[task.setvariable variable=targetVersion;]$newTargetVersion"
+      Write-Host "Updated targetVersion to '$newTargetVersion'"
+
+- task: UseDotNet@2
+  displayName: 'Use .NET 10.0 SDK'
+  inputs:
+    packageType: sdk
+    version: 10.x
+    includePreviewVersions: false
+    installationPath: $(Agent.ToolsDirectory)/dotnet
+
+- task: DotNetCoreCLI@2
+  displayName: 'restore'
+  inputs:
+    command: 'restore'
+    projects: '$(solution)'
+
+- task: DotNetCoreCLI@2
+  displayName: 'build'
+  inputs:
+    command: 'build'
+    projects: '$(solution)'
+    arguments: '-c $(buildConfiguration) --no-restore /p:Version=$(targetVersion)'
+
+# xunit v3 runs on Microsoft.Testing.Platform (global.json), which takes the project as --project,
+# so this is a plain script rather than the DotNetCoreCLI 'test' command.
+- script: dotnet test --project $(testProject) -c $(buildConfiguration) --no-build
+  displayName: 'test'
+
+- task: DotNetCoreCLI@2
+  displayName: 'pack Rampart'
+  condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+  inputs:
+    command: 'pack'
+    packagesToPack: '$(project)'
+    packDirectory: '$(Build.ArtifactStagingDirectory)/packages'
+    versioningScheme: 'off'
+    configuration: '$(buildConfiguration)'
+    buildProperties: 'Version=$(targetVersion)'
+    nobuild: true
+
+- task: NuGetCommand@2
+  displayName: 'push nuget'
+  condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+  inputs:
+    command: 'push'
+    packagesToPush: '$(Build.ArtifactStagingDirectory)/packages/*.nupkg'
+    nuGetFeedType: 'external'
+    publishFeedCredentials: 'nuget-curiosity-org'

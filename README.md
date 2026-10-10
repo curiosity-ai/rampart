@@ -26,6 +26,14 @@ await foreach (var chunk in guard.RevealAsync(llm.StreamAsync(safe.Text)))
     Console.Write(chunk);                        // placeholders split across chunks are handled
 ```
 
+```
+dotnet add package Rampart
+```
+
+[`Rampart/README.md`](Rampart/README.md) is the package's own readme, also shown on NuGet. It has
+samples for `IChatClient` round trips, streaming, multi-turn conversations, detection, log redaction,
+policy, other languages and ASP.NET Core.
+
 ## What it does
 
 ```
@@ -215,6 +223,14 @@ dotnet run -c Release --project samples/Rampart.Redact     # interactive redacto
 ```
 
 Requires the .NET 10 SDK. Tests use xunit v3 on Microsoft.Testing.Platform (`global.json`).
+
+## Publishing
+
+[`.devops/azure-pipelines.yml`](.devops/azure-pipelines.yml) is the Azure DevOps pipeline. On every
+push to `main` it builds the solution and runs the whole test suite. Only if that passes does it
+pack `Rampart` with a CalVer version (`yy.M.<buildId>`) and push it to nuget.org through the
+`nuget-curiosity-org` service connection. Pull request builds run the build and tests and stop
+there.
 
 ## Licenses
 
