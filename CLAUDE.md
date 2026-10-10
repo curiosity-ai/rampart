@@ -1,9 +1,8 @@
 # CLAUDE.md
 
-Rampart for .NET: a native C# port of National Design Studio's Rampart PII filter
-(https://huggingface.co/nationaldesignstudio/rampart and the `@nationaldesignstudio/rampart` npm
-package). Deterministic recognizers + a 4-bit MiniLM token classifier + default-deny placeholder
-policy. The published model is embedded in the assembly and run without ONNX Runtime.
+Rampart for .NET: a native C# port of National Design Studio's Rampart PII filter — source
+https://github.com/nationaldesignstudio/rampart, model https://huggingface.co/nationaldesignstudio/rampart.
+Deterministic recognizers + a 4-bit MiniLM token classifier + default-deny placeholder policy. The published model is embedded in the assembly and run without ONNX Runtime.
 
 ## Layout
 
@@ -20,8 +19,34 @@ policy. The published model is embedded in the assembly and run without ONNX Run
   - `src/Session/` — `SessionEntityTable` (placeholders), `StreamingReveal`.
   - `src/` — `ChatGuard`, `RampartAnalyzer`, `Redactor`, `Types` (labels, `PiiSpan`).
 - `tests/Rampart.Tests/` — xunit v3 suite; `Fixtures/reference.json` is generated, never hand-edited.
-- `tools/reference/` — `generate-fixtures.ts`, which runs the ORIGINAL npm package to produce the fixture.
+  `Upstream/` holds the ports of the source repo's `__tests__/*.test.ts`, one C# file per suite.
+- `tools/reference/` — `generate-fixtures.ts`, which runs the ORIGINAL source (a clone) to produce the fixture.
 - `samples/Rampart.Bench/` — latency vs ONNX Runtime and a per-stage profile (`-- --profile`).
+- `samples/Rampart.Redact/` — interactive redactor, the counterpart of upstream's `cli/redact.ts`.
+
+## Working against the original source
+
+Keep a clone of the original next to this repo and read it when touching any ported stage; the C#
+mirrors its file layout closely (`src/heuristics.ts` → `Detection/Heuristics.cs`, `src/ner/classifier.ts`
+→ `Ner/NerDetector.cs` + `Ner/TokenClassifier.cs`, `src/session.ts` → `Session/SessionEntityTable.cs`, …).
+
+```bash
+git clone https://github.com/nationaldesignstudio/rampart ../nationaldesignstudio/rampart
+cd ../nationaldesignstudio/rampart
+bun install --frozen-lockfile
+git lfs pull              # model/; if LFS is unavailable, copy the Hugging Face files in (same bytes)
+bunx vitest run           # upstream's own unit tests
+bun eval/run-public-eval.ts --strict
+```
+
+`model/` in the source repo is Git LFS; its object ids are the SHA-256 hashes `ResourceTests` pins, so
+the Hugging Face download is a valid substitute when LFS is not reachable.
+
+When upstream changes:
+1. Diff the new commit's `src/`, `index.ts`, `eval/public-cases.ts` and `__tests__/` against the one
+   recorded in the fixture (`"source"` in `reference.json`).
+2. Port the changes, and port new or changed upstream tests into `tests/Rampart.Tests/Upstream/`.
+3. Regenerate the fixture from the new commit (below) and run the whole suite.
 
 ## Build & test
 
@@ -68,16 +93,15 @@ Rules that follow from that:
 
 ## Regenerating the reference fixture
 
-Needs bun (or Node with TypeScript stripping) and a local copy of the Hugging Face repo:
+Needs bun and the source clone above (installed, `model/` hydrated):
 
 ```bash
-cd tools/reference
-npm install                      # @nationaldesignstudio/rampart@0.1.3, @huggingface/transformers@3.7.5
-bun generate-fixtures.ts /path/to/rampart-hf-clone
+bun tools/reference/generate-fixtures.ts ../nationaldesignstudio/rampart [model-dir]
 ```
 
-It refuses to run unless the clone's `model_q4.onnx` is byte-identical to the embedded one. Add new
-inputs to `tools/reference/corpus.ts`, never to the JSON.
+It imports the clone's `index.ts`, `eval/public-cases.ts` and its own `@huggingface/transformers`, refuses
+to run unless the model is byte-identical to the embedded one, and records the source commit in the
+fixture. Add new inputs to `tools/reference/corpus.ts`, never to the JSON.
 
 ## Performance notes
 

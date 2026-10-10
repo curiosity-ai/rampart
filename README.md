@@ -1,7 +1,8 @@
 # Rampart for .NET
 
 On-device PII detection and reversible redaction for .NET 10 — a native C# port of
-[National Design Studio's Rampart](https://huggingface.co/nationaldesignstudio/rampart): the
+[National Design Studio's Rampart](https://github.com/nationaldesignstudio/rampart)
+([model](https://huggingface.co/nationaldesignstudio/rampart)): the
 deterministic recognizers, the 4-bit MiniLM token classifier and the default-deny placeholder
 policy, with the published model embedded in the assembly.
 
@@ -61,6 +62,7 @@ can evade detection. Rampart is harm reduction, not a security boundary.
 | `RampartOptions` | `KeepLabels`, `Aliases` (e.g. `GIVEN_NAME → NAME`), `MinScore` (0.4), `HeuristicsOnly`, a custom `Ner` detector, a custom `Model`. |
 | `RampartModel` | The encoder. `RampartModel.Default` is the embedded model, loaded once and shared; `ComputeLogits(ids)` for raw access; `LoadFromDirectory` for a local copy of the Hugging Face repo. |
 | `WordPieceTokenizer`, `TokenClassifier`, `NerDetector`, `Heuristics`, `Policy`, `Premask`, `SessionEntityTable`, `StreamingReveal` | The individual stages, public so each can be used or replaced on its own. |
+| `ITokenClassifier` / `DelegateTokenClassifier`, `INerDetector` / `DelegateNerDetector` | The reference's plug points: run `NerDetector`'s windowing and span repair over another classifier (raw BIO rows or aggregated `entity_group` rows, optional tokenizer), or give the guard a different detector. |
 
 ```csharp
 // Detection only, e.g. for an audit log or a Presidio-style analyzer.
@@ -136,7 +138,9 @@ model takes ~0.1–0.2 s. Inputs longer than one window are scanned in overlappi
 
 ## Validation
 
-The test suite (`tests/Rampart.Tests`, 700+ tests) checks the port against two references:
+The port was developed against the original source,
+[nationaldesignstudio/rampart](https://github.com/nationaldesignstudio/rampart) (commit `95798af`,
+package version 0.1.3). The test suite (`tests/Rampart.Tests`, 800+ tests) checks it three ways:
 
 1. **ONNX Runtime running the published graph** (test-only dependency). The graph is re-encoded
    with every intermediate tensor exposed as an output, and the C# engine traces the same tensors
@@ -145,18 +149,24 @@ The test suite (`tests/Rampart.Tests`, 700+ tests) checks the port against two r
    inputs and a full 512-token window. The worst deviation is ~6e-6 relative to the tensor's peak
    (float32 summation order); the bound is 5e-5. Logits are also compared against ORT's fully
    optimized graph on all 93 fixture inputs, window by window, including argmax agreement.
-2. **The original JavaScript pipeline** — `@nationaldesignstudio/rampart` 0.1.3 on transformers.js
-   3.7.5 + onnxruntime-node — run over 93 inputs (the package's 58 public eval cases plus
+2. **The original JavaScript pipeline**, run from a clone of the source repository on its pinned
+   runtime (transformers.js 3.7.5 + onnxruntime-node) over 93 inputs (the package's 58 public eval cases plus
    multilingual, structured-ID, Unicode, special-token, long and edge cases) and a multi-turn
    conversation. Per case the fixture records tokens, the raw per-token classifier output, heuristic
    spans, the premasked text, NER spans, merged detections and the final placeholdered text; the C#
    port reproduces all of them (scores within 1e-4). See `tools/reference/`.
+3. **The upstream unit tests, ported** (`tests/Rampart.Tests/Upstream/`): `heuristics`, `premask`,
+   `guard`, `pipeline`, `ner-classifier` and `public-api-e2e` from the source repo's `__tests__/`, one
+   C# test per upstream case, with the same mock classifiers and detectors (aggregated and BIO rows,
+   mocked tokenizers and token counts for the windowing). Only `bench-score` is not ported: it tests
+   the offline benchmark-scoring scripts, not the runtime.
 
 The package's own strict gate is enforced too: on its public eval the port scores private-term
 recall 74/76 and public-term retention 78/79 — identical to the original, whose two leaks are the
 two exotic IDs its comments call out (`AGY-2026-009871`, `1EG4-TE5-MK73`).
 
-The embedded files are checked byte-for-byte against the published SHA-256 hashes.
+The embedded files are checked byte-for-byte against the published SHA-256 hashes, which are also
+the Git LFS object ids of `model/` in the source repository.
 
 ### Deliberate differences from the reference
 
@@ -176,6 +186,7 @@ and can emit a span with an undefined end. The port keeps the offsets aligned; t
 dotnet build -c Release
 dotnet test --project tests/Rampart.Tests/Rampart.Tests.csproj -c Release
 dotnet run -c Release --project samples/Rampart.Bench
+dotnet run -c Release --project samples/Rampart.Redact     # interactive redactor, like upstream's `bun run redact`
 ```
 
 Requires the .NET 10 SDK. Tests use xunit v3 on Microsoft.Testing.Platform (`global.json`).
@@ -188,6 +199,6 @@ Requires the .NET 10 SDK. Tests use xunit v3 on Microsoft.Testing.Platform (`glo
   [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) — see [`LICENSE-MODEL`](LICENSE-MODEL)
   and [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md). The model was trained on the
   [AI4Privacy OpenPII](https://huggingface.co/datasets/ai4privacy/pii-masking-openpii-1.5m) corpus (CC BY 4.0).
-- The public eval cases in the test fixture come from the `@nationaldesignstudio/rampart` package (CC BY 4.0).
+- The public eval cases in the test fixture, and the upstream tests ported under `tests/Rampart.Tests/Upstream/`, come from [nationaldesignstudio/rampart](https://github.com/nationaldesignstudio/rampart) (CC BY 4.0).
 
 Cite the model as: National Design Studio (2026), *Rampart*, https://huggingface.co/nationaldesignstudio/rampart.

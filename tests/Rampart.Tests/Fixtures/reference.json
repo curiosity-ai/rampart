@@ -1,5 +1,6 @@
 {
  "generator": "tools/reference/generate-fixtures.ts",
+ "source": "https://github.com/nationaldesignstudio/rampart@95798af5b0e71759e06f912d0a8b719f31744b20",
  "package": "@nationaldesignstudio/rampart@0.1.3",
  "transformers": "@huggingface/transformers@3.7.5",
  "model_sha256": "9f27d24949b0581701071ea5ef522d77ccd3f50c525cc91eac4d265b0fc2afe5",

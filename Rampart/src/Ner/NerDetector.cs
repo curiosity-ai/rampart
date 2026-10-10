@@ -13,6 +13,12 @@ public interface INerDetector
     IReadOnlyList<PiiSpan> Detect(string text);
 }
 
+/// <summary>An <see cref="INerDetector"/> backed by a delegate — for another detector, or a test double.</summary>
+public sealed class DelegateNerDetector(Func<string, IReadOnlyList<PiiSpan>> detect) : INerDetector
+{
+    public IReadOnlyList<PiiSpan> Detect(string text) => detect(text);
+}
+
 /// <summary>
 /// Contextual PII detection with the Rampart token classifier — the residual layer that catches
 /// what the heuristics cannot: names, contact and document identifiers, address components.
@@ -65,13 +71,14 @@ public sealed partial class NerDetector : INerDetector
         ["ZIP_CODE"] = PiiLabel.ZipCode,
     };
 
-    private readonly TokenClassifier _classifier;
+    private readonly ITokenClassifier _classifier;
 
     public double MinScore { get; }
 
     public NerDetector(RampartModel model, double minScore = DefaultMinScore) : this(new TokenClassifier(model), minScore) { }
 
-    public NerDetector(TokenClassifier classifier, double minScore = DefaultMinScore)
+    /// <summary>A detector over any classifier honouring the reference's contract (another model, a test double).</summary>
+    public NerDetector(ITokenClassifier classifier, double minScore = DefaultMinScore)
     {
         _classifier = classifier;
         MinScore = minScore;
@@ -80,13 +87,12 @@ public sealed partial class NerDetector : INerDetector
     /// <summary>A detector over the embedded model.</summary>
     public static NerDetector CreateDefault(double minScore = DefaultMinScore) => new(RampartModel.Default, minScore);
 
-    private WordPieceTokenizer Tokenizer => _classifier.Tokenizer;
-
     /// <summary>Detect contextual PII across the whole input, regardless of length.</summary>
     public IReadOnlyList<PiiSpan> Detect(string raw)
     {
         ArgumentNullException.ThrowIfNull(raw);
-        var windows = PlanTokenWindows(raw, TokenBudget, TokenOverlap);
+        var countTokens = _classifier.CountTokens;
+        var windows = countTokens is null ? [(0, raw.Length)] : PlanTokenWindows(raw, countTokens, TokenBudget, TokenOverlap);
         if (windows.Count <= 1) return DetectWindow(raw);
 
         var spans = new List<PiiSpan>();
@@ -108,9 +114,9 @@ public sealed partial class NerDetector : INerDetector
     /// <paramref name="overlap"/> tokens. Windows snap to word boundaries; a single word longer than
     /// the budget is the only thing hard-split, by character.
     /// </summary>
-    internal List<(int Start, int End)> PlanTokenWindows(string raw, int budget, int overlap)
+    internal static List<(int Start, int End)> PlanTokenWindows(string raw, Func<string, int> countTokens, int budget, int overlap)
     {
-        var segments = ToSegments(raw, budget);
+        var segments = ToSegments(raw, countTokens, budget);
         var windows = new List<(int, int)>();
         if (segments.Count == 0) return windows;
 
@@ -139,7 +145,7 @@ public sealed partial class NerDetector : INerDetector
 
     private readonly record struct Segment(int Start, int End, int Tokens);
 
-    private List<Segment> ToSegments(string raw, int budget)
+    private static List<Segment> ToSegments(string raw, Func<string, int> countTokens, int budget)
     {
         var segments = new List<Segment>();
         foreach (var (start, end) in WordSpans(raw))
@@ -147,14 +153,14 @@ public sealed partial class NerDetector : INerDetector
             int from = start;
             while (from < end)
             {
-                int tokens = Tokenizer.CountTokens(raw[from..end]);
+                int tokens = countTokens(raw[from..end]);
                 if (tokens <= budget)
                 {
                     segments.Add(new Segment(from, end, tokens));
                     break;
                 }
-                int cut = FitCharsToBudget(raw, from, end, budget);
-                segments.Add(new Segment(from, cut, Tokenizer.CountTokens(raw[from..cut])));
+                int cut = FitCharsToBudget(raw, from, end, budget, countTokens);
+                segments.Add(new Segment(from, cut, countTokens(raw[from..cut])));
                 from = cut;
             }
         }
@@ -175,13 +181,13 @@ public sealed partial class NerDetector : INerDetector
         }
     }
 
-    private int FitCharsToBudget(string raw, int from, int end, int budget)
+    private static int FitCharsToBudget(string raw, int from, int end, int budget, Func<string, int> countTokens)
     {
         int lo = from + 1, hi = end, best = from + 1;
         while (lo <= hi)
         {
             int mid = (lo + hi) >> 1;
-            if (Tokenizer.CountTokens(raw[from..mid]) <= budget)
+            if (countTokens(raw[from..mid]) <= budget)
             {
                 best = mid;
                 lo = mid + 1;
@@ -200,17 +206,10 @@ public sealed partial class NerDetector : INerDetector
     internal List<PiiSpan> DetectWindow(string raw)
     {
         var inferText = raw.Replace('-', ' ');
-        var tokens = Tokenizer.Tokenize(inferText);
-        var ids = new int[tokens.Count + 2];
-        ids[0] = Tokenizer.ClsId;
-        for (int i = 0; i < tokens.Count; i++) ids[i + 1] = Tokenizer.TokenToId(tokens[i]);
-        ids[^1] = Tokenizer.SepId;
-        if (ids.Length > ModelMaxTokens)
-            throw new InvalidOperationException($"NER window of {ids.Length} tokens exceeds the model maximum of {ModelMaxTokens}.");
-
-        var entities = _classifier.Classify(ids);
+        var entities = _classifier.Classify(inferText);
         var folded = FoldForModel(inferText);
-        var indexOffsets = BuildTokenIndexOffsets(folded, tokens);
+        var tokenize = _classifier.Tokenize;
+        var indexOffsets = tokenize is null ? null : BuildTokenIndexOffsets(folded, tokenize(inferText));
 
         var candidates = new List<PiiSpan>();
         foreach (var entity in MergeBioTokens(entities, folded, indexOffsets))
@@ -310,7 +309,8 @@ public sealed partial class NerDetector : INerDetector
     internal sealed record AggregatedEntity(string Group, double Score, int Start, int End);
 
     /// <summary>
-    /// Merge raw BIO tokens into entities (B starts a span, a matching I extends it, and a <c>##</c>
+    /// Normalize either row shape into raw-offset entities. Aggregated rows are used as they are. Raw
+    /// BIO tokens are merged (B starts a span, a matching I extends it, and a <c>##</c>
     /// continuation always extends a span of the same base label even when labelled B-). Scores are
     /// averaged over the merged tokens.
     /// </summary>
@@ -331,10 +331,19 @@ public sealed partial class NerDetector : INerDetector
 
         foreach (var entity in entities)
         {
-            var (prefix, baseLabel) = StripBio(entity.Entity);
+            // Already-aggregated shape: offsets are in unfolded model-input coordinates.
+            if (entity.EntityGroup is not null && entity.Start is int groupStart && entity.End is int groupEnd)
+            {
+                Flush();
+                output.Add(new AggregatedEntity(entity.EntityGroup, entity.Score, groupStart, groupEnd));
+                continue;
+            }
+            var rawLabel = entity.Entity ?? entity.EntityGroup;
+            if (rawLabel is null) continue;
+            var (prefix, baseLabel) = StripBio(rawLabel);
 
             int start, end;
-            if (indexOffsets is not null && (uint)entity.Index < (uint)indexOffsets.Length && indexOffsets[entity.Index] is var pair && pair.Start != pair.End)
+            if (indexOffsets is not null && entity.Index is int index && (uint)index < (uint)indexOffsets.Length && indexOffsets[index] is var pair && pair.Start != pair.End)
             {
                 (start, end) = pair;
             }

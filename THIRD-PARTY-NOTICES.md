@@ -18,8 +18,9 @@ No changes were made to the model files. The C# code in this repository is an in
 re-implementation of the inference pipeline of the `@nationaldesignstudio/rampart` package
 (CC BY 4.0); its behaviour follows that package, which is attributed here.
 
-## Test fixture
+## Tests
 
-`tests/Rampart.Tests/Fixtures/reference.json` contains outputs of the `@nationaldesignstudio/rampart`
-package (version 0.1.3) and the public evaluation cases from its `eval/public-cases.ts`
-(© National Design Studio, CC BY 4.0).
+`tests/Rampart.Tests/Fixtures/reference.json` contains outputs of the Rampart source
+(https://github.com/nationaldesignstudio/rampart, package version 0.1.3) and the public evaluation
+cases from its `eval/public-cases.ts`. The tests under `tests/Rampart.Tests/Upstream/` are C# ports
+of its `__tests__/` suites. © National Design Studio, CC BY 4.0.
