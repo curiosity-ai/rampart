@@ -4,16 +4,21 @@ using Rampart;
 using Rampart.Model;
 using Rampart.Tests;
 
-// Latency of the C# engine against ONNX Runtime (CPU, full graph optimization) on the same model,
-// plus the end-to-end guard.
+// Rampart's benchmark harness. Every mode first prints the machine and a calibration (SIMD GEMM
+// throughput, memory bandwidth, CPU steal) so results from a contended VM can be told apart from
+// regressions. Comparisons run every engine in this one process, interleaved.
 //
-//   dotnet run -c Release --project samples/Rampart.Bench                    # latency table, all cores
-//   dotnet run -c Release --project samples/Rampart.Bench -- --single        # both engines on one thread
-//   dotnet run -c Release --project samples/Rampart.Bench -- --ort-spinning  # ONNX Runtime alone, spinning pool
-//   dotnet run -c Release --project samples/Rampart.Bench -- --profile [--short] [--single]  # time per stage
-//   dotnet run -c Release --project samples/Rampart.Bench -- --alloc [--single]  # bytes allocated per call
-//   dotnet run -c Release --project samples/Rampart.Bench -- --alloc-parts   # bytes per kernel
+//   dotnet run -c Release --project samples/Rampart.Bench                       # sweep 32..512 tokens: C# vs ONNX Runtime, 1 thread and all cores
+//   dotnet run -c Release --project samples/Rampart.Bench -- --single | --multi # only the 1-thread / all-core engines
+//   dotnet run -c Release --project samples/Rampart.Bench -- --avx512-ab        # C# with AVX-512 off, then on (child processes)
+//   dotnet run -c Release --project samples/Rampart.Bench -- --profile [--short] [--single]  # time per encoder stage
+//   dotnet run -c Release --project samples/Rampart.Bench -- --alloc [--single] # bytes allocated per call
+//   dotnet run -c Release --project samples/Rampart.Bench -- --alloc-parts      # bytes per kernel
 //   dotnet run -c Release --project samples/Rampart.Bench -- --gemm | --attention  # kernel throughput
+//   dotnet run -c Release --project samples/Rampart.Bench -- --env              # only the machine and calibration
+BenchEnvironment.Print();
+if (args.Contains("--env")) return;
+
 bool single = args.Contains("--single");
 var model = single ? RampartModel.Load(new RampartModelOptions { MaxDegreeOfParallelism = 1 }) : RampartModel.Default;
 var tokenizer = model.Tokenizer;
@@ -21,11 +26,9 @@ const string message = "My name is Alex Rivera and I live at 12 Main Street, Spr
 var longIds = tokenizer.Encode(string.Join(" ", Enumerable.Repeat(message, 40)), addSpecialTokens: false);
 int[] Window(int content) => [tokenizer.ClsId, .. longIds.AsSpan(0, content), tokenizer.SepId];
 
-if (args.Contains("--ort-spinning"))
+if (args.Contains("--avx512-ab"))
 {
-    // ONNX Runtime alone, with its default (spinning) intra-op pool: the fair multi-threaded baseline.
-    foreach (var (name, ids) in new[] { ("message", tokenizer.Encode(message)), ("128 tokens", Window(126)), ("512 tokens", Window(510)) })
-        Console.WriteLine($"  {name,-11} ({ids.Length,3} tokens)  ONNX Runtime (spinning): {Measure(() => OnnxReference.Shared.RunLogitsSpinning(ids)),7:F2} ms");
+    Compare.Avx512AB();
     return;
 }
 
@@ -186,21 +189,7 @@ if (args.Contains("--profile"))
     return;
 }
 
-Console.WriteLine($"{(single ? "1 thread (both engines)" : $"{Environment.ProcessorCount} cores")}, AVX-512: {System.Runtime.Intrinsics.X86.Avx512F.IsSupported}; median latency");
-var ort = OnnxReference.Shared;
-foreach (var (name, ids) in new[] { ("message", tokenizer.Encode(message)), ("128 tokens", Window(126)), ("512 tokens", Window(510)) })
-{
-    var csharp = Measure(() => model.ComputeLogits(ids));
-    var onnx = single ? Measure(() => ort.RunLogitsSingleThread(ids)) : Measure(() => ort.RunLogits(ids));
-    Console.WriteLine($"  {name,-11} ({ids.Length,3} tokens)  Rampart C#: {csharp,7:F2} ms   ONNX Runtime: {onnx,7:F2} ms");
-}
-
-var analyzer = new RampartAnalyzer(new RampartOptions { Model = model });
-Console.WriteLine($"  ChatGuard.Protect (message, heuristics + model + policy): {Measure(() => new ChatGuard(analyzer).Protect(message)):F2} ms");
-
-var sw = Stopwatch.StartNew();
-GC.KeepAlive(RampartModel.Load());
-Console.WriteLine($"  Load from the embedded resource: {sw.Elapsed.TotalMilliseconds:F0} ms");
+Compare.Run(args, longIds, tokenizer);
 
 static double Measure(Action action, int iterations = 50)
 {

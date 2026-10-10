@@ -132,16 +132,21 @@ greedy WordPiece with `##` continuations and the 100-character limit).
 ### Performance
 
 Median latency on a 4-core cloud Xeon (AVX-512) against ONNX Runtime 1.23 with full graph
-optimization on the same model (`samples/Rampart.Bench`; the VM is noisy, ±10% run to run):
+optimization on the same model. All four engines ran in one process, interleaved
+(`samples/Rampart.Bench`). Full sweep, environment, calibration and AVX-512 A/B are in
+[BENCHMARK-RESULT.md](samples/Rampart.Bench/BENCHMARK-RESULT.md):
 
-| Input | Rampart C#, 4 threads | ONNX Runtime, 4 threads (spinning pool) | Rampart C#, 1 thread | ONNX Runtime, 1 thread |
-|---|---|---|---|---|
-| chat message (30 tokens) | ~4.5 ms | ~6.0 ms | ~10.7 ms | ~12.4 ms |
-| 128 tokens | ~15 ms | ~18 ms | ~37 ms | ~41 ms |
-| 512 tokens (one full window) | ~66 ms | ~72 ms | ~187 ms | ~204 ms |
+| Tokens | Rampart C#, 1 thread | ONNX Runtime, 1 thread | Rampart C#, 4 threads | ONNX Runtime, 4 threads (spinning) |
+|---:|---:|---:|---:|---:|
+| 32 (a chat message) | 9.9 ms | 13.3 ms | 4.6 ms | 6.4 ms |
+| 128 | 37.9 ms | 37.2 ms | 14.5 ms | 17.1 ms |
+| 256 | 86.5 ms | 79.8 ms | 30.8 ms | 29.2 ms |
+| 512 (one full window) | 196 ms | 208 ms | 65 ms | 80 ms |
 
-`ChatGuard.Protect` on the chat message, everything included, takes ~6 ms (~12 ms on one thread).
-Loading the embedded model takes ~0.2 s. Inputs longer than one window are scanned in overlapping
+Short inputs are ~25% faster than ORT. From 128 tokens up, one thread is at parity (±8%, within the
+VM's run-to-run noise), and four threads are faster at every length but 256.
+`ChatGuard.Protect` on the chat message, everything included, takes ~4.5 ms (~10.7 ms on one thread).
+Loading the embedded model takes 0.3–0.5 s. Inputs longer than one window are scanned in overlapping
 500-token windows.
 
 ### Allocations

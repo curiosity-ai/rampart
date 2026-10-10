@@ -23,7 +23,8 @@ Deterministic recognizers + a 4-bit MiniLM token classifier + default-deny place
 - `tests/Rampart.Tests/` — xunit v3 suite; `Fixtures/reference.json` is generated, never hand-edited.
   `Upstream/` holds the ports of the source repo's `__tests__/*.test.ts`, one C# file per suite.
 - `tools/reference/` — `generate-fixtures.ts`, which runs the ORIGINAL source (a clone) to produce the fixture.
-- `samples/Rampart.Bench/` — latency vs ONNX Runtime and a per-stage profile (`-- --profile`).
+- `samples/Rampart.Bench/` — latency sweep vs ONNX Runtime, per-stage profile, kernel and allocation
+  modes; `BENCHMARK-RESULT.md` holds the published numbers.
 - `samples/Rampart.Redact/` — interactive redactor, the counterpart of upstream's `cli/redact.ts`.
 
 ## Working against the original source
@@ -108,11 +109,17 @@ fixture. Add new inputs to `tools/reference/corpus.ts`, never to the JSON.
 ## Performance and allocation notes
 
 Measure before and after any change to the engine; the VM-class machines this runs on are noisy
-(±10%), so repeat runs. `samples/Rampart.Bench` has a mode for each question:
-`--single` (both engines on one thread), `--ort-spinning` (the fair multi-threaded ORT baseline),
-`--profile [--short] [--single]` (time per stage), `--gemm` / `--attention` (kernel throughput),
-`--alloc [--single]` and `--alloc-parts` (bytes per call).
+(±10%), so repeat runs. Every mode of `samples/Rampart.Bench` first prints the machine and a
+calibration (GEMM GFLOPS best/median, memory read/copy GB/s, CPU steal). Compare a result only with
+one whose calibration is in the same band; `--env` prints just that block. Modes:
+default (sweep 32–512 tokens, C# vs ORT, 1 thread and all cores), `--single` / `--multi` (one pair),
+`--avx512-ab` (C# with `DOTNET_EnableAVX512=0`, then default, in child processes; on .NET 10 the
+per-ISA `DOTNET_EnableAVX512F` is ignored), `--profile [--short] [--single]` (time per stage),
+`--gemm` / `--attention` (kernel throughput), `--alloc [--single]` and `--alloc-parts` (bytes per call).
 
+- **Compare engines in one process, interleaved** (what the default mode does), never in separate
+  runs: the VM gets rescheduled between runs, and a 10% shift would read as a win or a regression.
+  Re-publish `BENCHMARK-RESULT.md` when the numbers move.
 - **Weights stay 4-bit** (~5 MB, cache-resident), permuted at load into panel order — bit-exact, not
   re-quantized (`GemmTests.PanelOrderedWeightsDecodeToTheShippedNibbles`). Expanding them to float
   (42 MB) was tried and is slower: it no longer fits the L3 and streams from DRAM on every call.
@@ -134,8 +141,9 @@ Measure before and after any change to the engine; the VM-class machines this ru
   (`string.Normalize`/`TryNormalize` allocate); `Heuristics` scans the two backtracking rules by hand
   (`HeuristicsScannerTests` fuzzes them against the regexes). New code on these paths should keep
   `--alloc` at 0 B for `ComputeLogits` and only result objects for the pipeline.
-- Benchmark after warm-up (tiered JIT) and with ORT spinning off when timing both in one process;
-  the bench does both.
+- Benchmark after a time-based warm-up (the tiered JIT recompiles in the background for a while), and
+  time with `Stopwatch.GetTimestamp` rather than `StartNew` (a `Stopwatch` is 40 B, charged to the
+  engine under test). The bench does both.
 
 ## Licensing
 
