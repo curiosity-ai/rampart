@@ -143,16 +143,6 @@ internal sealed class RampartWeights
         return weights;
     }
 
-    /// <summary>Expands every 4-bit linear into float panels (see <see cref="Q4Linear.ExpandWeights"/>).</summary>
-    public void ExpandWeights()
-    {
-        foreach (var layer in Layers)
-        {
-            foreach (var linear in new[] { layer.Query, layer.Key, layer.Value, layer.AttentionOutput, layer.Intermediate, layer.Output }) linear.ExpandWeights();
-        }
-        Classifier.ExpandWeights();
-    }
-
     private void Validate()
     {
         int h = Config.HiddenSize;

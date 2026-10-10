@@ -304,15 +304,64 @@ public sealed class GemmTests
     }
 
     [Fact]
-    public void QuantizedAndExpandedWeightsAgree()
+    public void PanelOrderedWeightsDecodeToTheShippedNibbles()
     {
-        var packed = RampartModel.Load(new RampartModelOptions { KeepWeightsQuantized = true });
-        var expanded = RampartModel.Default;
-        foreach (var text in new[] { "My name is Alex Rivera.", Corpus.Long() })
+        // Decode layer 0's query weight straight from the ONNX tensors and compare every weight with the
+        // permuted copy, both through the scalar accessor and the SIMD tile dequantizer.
+        var onnx = Rampart.Onnx.OnnxModel.Parse(RampartModel.ReadResource(typeof(RampartModel).Assembly, "Rampart.model_q4.onnx"));
+        var mm = onnx.Nodes.Single(n => n.Outputs[0] == OnnxNames.MatMul(0, "attention/self/query"));
+        var packed = onnx.GetTensor(mm.Inputs[1]).AsBytes();
+        var scales = onnx.GetTensor(mm.Inputs[2]).AsFloats();
+        var linear = RampartModel.Default.Weights.Layers[0].Query;
+        var panel = new float[linear.K * Q4Linear.Tile];
+        for (int tile = 0; tile < linear.Tiles; tile++)
         {
-            var content = expanded.Tokenizer.Encode(text, addSpecialTokens: false);
-            int[] ids = [expanded.Tokenizer.ClsId, .. content.AsSpan(0, Math.Min(510, content.Length)), expanded.Tokenizer.SepId];
-            Assert.Equal(expanded.ComputeLogits(ids), packed.ComputeLogits(ids));
+            linear.DequantizeTile(tile, panel);
+            for (int r = 0; r < Q4Linear.Tile; r++)
+            {
+                int row = tile * Q4Linear.Tile + r;
+                for (int k = 0; k < linear.K; k++)
+                {
+                    byte b = packed[row * (linear.K / 2) + k / 2];
+                    int q = k % 2 == 0 ? b & 0x0F : b >> 4;
+                    float expected = (q - 8f) * scales[row * linear.BlocksPerRow + k / linear.BlockSize];
+                    Assert.Equal(expected, linear.Weight(row, k));
+                    Assert.Equal(expected, panel[k * Q4Linear.Tile + r]);
+                }
+            }
         }
+    }
+}
+
+public sealed class ExpTests
+{
+    [Fact]
+    public void FastExpIsWithinTwoUlpOverTheSoftmaxRange()
+    {
+        double worst = 0;
+        var xs = new float[16];
+        for (double x0 = -87; x0 <= 88; x0 += 16 * 1e-3)
+        {
+            for (int i = 0; i < 16; i++) xs[i] = (float)(x0 + i * 1e-3);
+            var v512 = Kernels.Exp(System.Runtime.Intrinsics.Vector512.Create(xs));
+            var v256 = Kernels.Exp(System.Runtime.Intrinsics.Vector256.Create(xs.AsSpan(0, 8)));
+            for (int i = 0; i < 16; i++)
+            {
+                double exact = Math.Exp(xs[i]);
+                worst = Math.Max(worst, Math.Abs(v512[i] - exact) / exact);
+                worst = Math.Max(worst, Math.Abs(Kernels.Exp(xs[i]) - exact) / exact);
+                if (i < 8) worst = Math.Max(worst, Math.Abs(v256[i] - exact) / exact);
+            }
+        }
+        Assert.True(worst < 2.5e-7, $"max relative error {worst}");
+    }
+
+    [Fact]
+    public void SoftmaxSumsToOne()
+    {
+        var row = Enumerable.Range(0, 37).Select(i => (float)Math.Sin(i) * 20).ToArray();
+        Kernels.SoftmaxInPlace(row);
+        Assert.Equal(1.0, row.Sum(x => (double)x), 5);
+        Assert.All(row, p => Assert.InRange(p, 0f, 1f));
     }
 }
