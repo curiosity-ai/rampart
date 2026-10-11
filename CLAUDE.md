@@ -21,8 +21,9 @@ Deterministic recognizers + a 4-bit MiniLM token classifier + default-deny place
     (port of `detectNer`: windows, folding, BIO merge, span repair).
   - `src/Detection/` — `Heuristics`, `Validators`, `Policy` (merge + keep-set), `Premask`.
   - `src/Session/` — `SessionEntityTable` (placeholders), `StreamingReveal`.
-  - `src/` — the public API: `RampartAnalyzer` (+ `RampartOptions`), `RampartAnonymizer`, `RampartCloaker`,
-    `RecognizerResult`; and the internal `ChatGuard` (port of upstream `guard.ts`) and `Types` (labels, `PiiSpan`).
+  - `src/` — the public API: `RampartAnalyzer` (+ `RampartOptions`, `AnalyzeOptions`), `RampartAnonymizer`,
+    `RampartCloaker`, `RecognizerResult`, `EntityTypes` (the entity type names as constants; `PiiLabels`
+    maps each `PiiLabel` to them, and `EntityTypesTests` pins one constant per label); and the internal `ChatGuard` (port of upstream `guard.ts`) and `Types` (labels, `PiiSpan`).
 - `tests/Rampart.Tests/` — xunit v3 suite; `Fixtures/reference.json` is generated, never hand-edited.
   `Upstream/` holds the ports of the source repo's `__tests__/*.test.ts`, one C# file per suite.
 - `tools/reference/` — `generate-fixtures.ts`, which runs the ORIGINAL source (a clone) to produce the fixture.

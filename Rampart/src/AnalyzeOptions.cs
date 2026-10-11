@@ -8,8 +8,8 @@ namespace Rampart;
 /// <code>
 /// var options = new AnalyzeOptions()
 ///     .WithCapitalizedParticles(false)
-///     .AddHint("GIVEN_NAME", "John")
-///     .AddHint("SURNAME", "De La Croix", "Croix");
+///     .AddHint(EntityTypes.GivenName, "John")
+///     .AddHint(EntityTypes.Surname, "De La Croix", "Croix");
 /// </code>
 /// An instance can be reused across calls and threads: its hints are compiled once, on first use.
 /// Configure it before sharing it; changing it while another thread analyzes with it is not supported.
@@ -44,7 +44,7 @@ public sealed class AnalyzeOptions
     }
 
     /// <summary>
-    /// Adds values of <paramref name="entityType"/> (<c>GIVEN_NAME</c>, <c>SURNAME</c>, <c>EMAIL</c>, …) that
+    /// Adds values of <paramref name="entityType"/> (an <see cref="EntityTypes"/> constant) that
     /// are always reported, such as the name of the person sending the message. Call it as often as you
     /// like: values accumulate per type, and a value already added for the type is ignored.
     /// <list type="bullet">

@@ -133,3 +133,24 @@ public sealed class CloakerTests
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => new RampartCloaker().CloakAsync(text, [new(6, 20, "GIVEN_NAME", 1f)], Task.FromResult));
     }
 }
+
+public sealed class EntityTypesTests
+{
+    [Fact]
+    public void OneConstantPerLabelWithTheReportedName()
+    {
+        var constants = typeof(EntityTypes).GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
+            .Where(f => f.IsLiteral)
+            .ToDictionary(f => f.Name, f => (string)f.GetRawConstantValue()!);
+        Assert.Equal(Enum.GetNames<PiiLabel>().Order(), constants.Keys.Order());
+        foreach (var label in Enum.GetValues<PiiLabel>()) Assert.Equal(label.ToName(), constants[label.ToString()]);
+    }
+
+    [Fact]
+    public void ResultsAndHintsUseTheConstants()
+    {
+        const string text = "Ask alex rivera, SSN 472-81-0094.";
+        var results = new RampartAnalyzer().Analyze(text, new AnalyzeOptions().AddHint(EntityTypes.GivenName, "Alex").AddHint(EntityTypes.Surname, "Rivera"));
+        Assert.Equal([EntityTypes.GivenName, EntityTypes.Surname, EntityTypes.Ssn], results.Select(r => r.EntityType));
+    }
+}

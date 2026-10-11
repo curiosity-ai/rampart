@@ -70,6 +70,7 @@ The public surface is the Catalyst.Presidio flow and nothing else:
 |---|---|
 | `PresidioAnalyzer.Analyze(text)` → `List<RecognizerResult>` | `RampartAnalyzer.Analyze(text)` → `List<RecognizerResult>` |
 | `RecognizerResult` (`Start`, `End` inclusive, `EntityType`, `Score`, `Length`) | `RecognizerResult`, the same shape |
+| entity type strings (`"EMAIL_ADDRESS"`, …) | `EntityTypes` constants (`EntityTypes.Email` is `"EMAIL"`, …) |
 | `PresidioAnonymizer.Anonymize(text, results, "mask" / "replace" / "redact" / "hash", maskChar, replacement)` | `RampartAnonymizer.Anonymize`, the same signature and operators |
 | `PresidioCloaker.CloakAsync(document, results, Func<string, Task<string>>)` and its streaming overload | `RampartCloaker.CloakAsync(text, results, …)`, both overloads |
 | `PresidioAnalyzer.For(language).AddAllRecognizers()` | `new RampartAnalyzer(options)`: one multilingual model; `RampartOptions` sets `KeepLabels`, `MinScore` and the `Model` (`RampartModel.Default`, `Load(options)`, `LoadFromDirectory`) |
