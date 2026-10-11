@@ -192,7 +192,7 @@ over-redacts but leaks nothing.
 - `.WithCapitalizedParticles(false)` turns the rescue off. "Alex" and "Maria" are then reported
   alone, but short name parts the model did not tag can leak: "Juan De La Vega Ruiz" gives only
   "Juan" and "Ruiz".
-- `.AddHint(entityType, params values)` adds values that are always reported, such as the sender's
+- `.AddHint(PiiLabel, params values)` adds values that are always reported, such as the sender's
   name. Values accumulate per type across calls. The words of those values also extend spans of their type over neighbouring words, whatever
   their length or case, which covers such parts for known names.
 

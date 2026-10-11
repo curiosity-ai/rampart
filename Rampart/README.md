@@ -214,8 +214,8 @@ message, add them as hints by entity type:
 
 ```csharp
 var sender = new AnalyzeOptions()
-    .AddHint(EntityTypes.GivenName, "Alex")
-    .AddHint(EntityTypes.Surname, "Rivera");
+    .AddHint(PiiLabel.GivenName, "Alex")
+    .AddHint(PiiLabel.Surname, "Rivera");
 
 var text = "Ask alex rivera about it, he will know.";
 anonymizer.Anonymize(text, analyzer.Analyze(text), "replace", replacement: "<PII>");
@@ -227,15 +227,14 @@ anonymizer.Anonymize(text, analyzer.Analyze(text, sender), "replace", replacemen
 - **Always reported.** Every occurrence of a hinted value is reported as its entity type, with
   score 1. That holds even when the model misses it, and even when the type is in `KeepLabels`.
 - **Several values per type.** A type takes as many values as you like, in one call
-  (`AddHint(EntityTypes.GivenName, "Alex", "Sam")`) or across several. Repeated values are ignored. Each
+  (`AddHint(PiiLabel.GivenName, "Alex", "Sam")`) or across several. Repeated values are ignored. Each
   value is matched on its own. Where two values of a type overlap in the text, as with
   `"De La Vega Ruiz"` and `"Vega"`, their spans are merged into one.
 - **Whole words.** The value's words must match whole words, with any spacing between them: "Al"
   does not match "Also".
 - **Case.** Matching ignores case by default. For a hint that is also a common word ("Will", "Mark",
   "May"), call `.WithHintsIgnoringCase(false)`.
-- **Unknown types.** `AddHint` throws `ArgumentException` for an entity type the analyzer does not
-  report.
+- **Typed.** `AddHint` takes the entity type as a `PiiLabel`, the same enum `KeepLabels` uses.
 
 The words of all of a type's hints also **expand** spans of that type. A detected span grows over the
 hinted words right before it, then over the ones right after it. Unlike the capitalized-particle
@@ -247,7 +246,7 @@ and `SURNAME`:
 var text = "Juan De La Vega Ruiz signed.";
 var options = new AnalyzeOptions()
     .WithCapitalizedParticles(false)
-    .AddHint(EntityTypes.Surname, "De La Vega Ruiz");
+    .AddHint(PiiLabel.Surname, "De La Vega Ruiz");
 analyzer.Analyze(text, options);
 // → GIVEN_NAME "Juan", SURNAME "De La Vega Ruiz"
 ```
@@ -258,8 +257,9 @@ GIVEN_NAME "Maria" and SURNAME "De La Vega Ruiz".
 
 ## Entity types
 
-Each name is also a constant on `EntityTypes` (`EntityTypes.GivenName` is `"GIVEN_NAME"`). Use the
-constants to compare `RecognizerResult.EntityType` and to call `AddHint`:
+`RecognizerResult.EntityType` is the name as a string, as in Catalyst.Presidio. Each name is also a
+constant on `EntityTypes` (`EntityTypes.GivenName` is `"GIVEN_NAME"`) to compare results with. The
+options take the `PiiLabel` enum (`PiiLabel.GivenName`):
 
 ```csharp
 var names = results.Where(r => r.EntityType is EntityTypes.GivenName or EntityTypes.Surname);

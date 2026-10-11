@@ -147,10 +147,10 @@ public sealed class EntityTypesTests
     }
 
     [Fact]
-    public void ResultsAndHintsUseTheConstants()
+    public void ResultsReportTheConstants()
     {
         const string text = "Ask alex rivera, SSN 472-81-0094.";
-        var results = new RampartAnalyzer().Analyze(text, new AnalyzeOptions().AddHint(EntityTypes.GivenName, "Alex").AddHint(EntityTypes.Surname, "Rivera"));
+        var results = new RampartAnalyzer().Analyze(text, new AnalyzeOptions().AddHint(PiiLabel.GivenName, "Alex").AddHint(PiiLabel.Surname, "Rivera"));
         Assert.Equal([EntityTypes.GivenName, EntityTypes.Surname, EntityTypes.Ssn], results.Select(r => r.EntityType));
     }
 }

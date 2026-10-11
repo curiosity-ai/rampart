@@ -8,8 +8,8 @@ namespace Rampart;
 /// <code>
 /// var options = new AnalyzeOptions()
 ///     .WithCapitalizedParticles(false)
-///     .AddHint(EntityTypes.GivenName, "John")
-///     .AddHint(EntityTypes.Surname, "De La Croix", "Croix");
+///     .AddHint(PiiLabel.GivenName, "John")
+///     .AddHint(PiiLabel.Surname, "De La Croix", "Croix");
 /// </code>
 /// An instance can be reused across calls and threads: its hints are compiled once, on first use.
 /// Configure it before sharing it; changing it while another thread analyzes with it is not supported.
@@ -44,7 +44,7 @@ public sealed class AnalyzeOptions
     }
 
     /// <summary>
-    /// Adds values of <paramref name="entityType"/> (an <see cref="EntityTypes"/> constant) that
+    /// Adds values of <paramref name="label"/> that
     /// are always reported, such as the name of the person sending the message. Call it as often as you
     /// like: values accumulate per type, and a value already added for the type is ignored.
     /// <list type="bullet">
@@ -59,12 +59,10 @@ public sealed class AnalyzeOptions
     /// one person's name across GIVEN_NAME and SURNAME.</item>
     /// </list>
     /// </summary>
-    /// <exception cref="ArgumentException"><paramref name="entityType"/> is not a type the analyzer reports.</exception>
-    public AnalyzeOptions AddHint(string entityType, params string[] values)
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="label"/> is not a defined <see cref="PiiLabel"/>.</exception>
+    public AnalyzeOptions AddHint(PiiLabel label, params string[] values)
     {
-        ArgumentNullException.ThrowIfNull(entityType);
-        if (!PiiLabels.TryParse(entityType, out var label))
-            throw new ArgumentException($"Unknown entity type '{entityType}'.", nameof(entityType));
+        if (!Enum.IsDefined(label)) throw new ArgumentOutOfRangeException(nameof(label), label, "Not a defined PiiLabel.");
         if (values is null) return this;
 
         foreach (var value in values)
@@ -93,11 +91,11 @@ public sealed class AnalyzeOptions
         return this;
     }
 
-    /// <summary>The hint values added so far, by entity type name. Empty when there are none.</summary>
-    public IReadOnlyDictionary<string, IReadOnlyList<string>> Hints
+    /// <summary>The hint values added so far, by entity type. Empty when there are none.</summary>
+    public IReadOnlyDictionary<PiiLabel, IReadOnlyList<string>> Hints
         => _hints is null
-            ? new Dictionary<string, IReadOnlyList<string>>()
-            : _hints.ToDictionary(kv => kv.Key.ToName(), kv => (IReadOnlyList<string>)kv.Value.AsReadOnly());
+            ? new Dictionary<PiiLabel, IReadOnlyList<string>>()
+            : _hints.ToDictionary(kv => kv.Key, kv => (IReadOnlyList<string>)kv.Value.AsReadOnly());
 
     internal HintSet? CompiledHints => _hints is null ? null : _compiled ??= HintSet.Build(_hints, HintsIgnoreCase);
 }

@@ -1,10 +1,9 @@
 namespace Rampart;
 
 /// <summary>
-/// The entity type names Rampart reports in <see cref="RecognizerResult.EntityType"/> and accepts in
-/// <see cref="AnalyzeOptions.AddHint"/>, one constant per <see cref="PiiLabel"/>.
+/// The entity type names Rampart reports in <see cref="RecognizerResult.EntityType"/>, one constant
+/// per <see cref="PiiLabel"/>, for comparing results without string literals.
 /// <code>
-/// var options = new AnalyzeOptions().AddHint(EntityTypes.GivenName, "Alex");
 /// var names = results.Where(r => r.EntityType is EntityTypes.GivenName or EntityTypes.Surname);
 /// </code>
 /// </summary>

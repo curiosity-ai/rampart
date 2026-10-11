@@ -22,7 +22,7 @@ Deterministic recognizers + a 4-bit MiniLM token classifier + default-deny place
   - `src/Detection/` — `Heuristics`, `Validators`, `Policy` (merge + keep-set), `Premask`.
   - `src/Session/` — `SessionEntityTable` (placeholders), `StreamingReveal`.
   - `src/` — the public API: `RampartAnalyzer` (+ `RampartOptions`, `AnalyzeOptions`), `RampartAnonymizer`,
-    `RampartCloaker`, `RecognizerResult`, `EntityTypes` (the entity type names as constants; `PiiLabels`
+    `RampartCloaker`, `RecognizerResult`, `EntityTypes` (the reported entity type names as constants, for comparing results; options take `PiiLabel`; `PiiLabels`
     maps each `PiiLabel` to them, and `EntityTypesTests` pins one constant per label); and the internal `ChatGuard` (port of upstream `guard.ts`) and `Types` (labels, `PiiSpan`).
 - `tests/Rampart.Tests/` — xunit v3 suite; `Fixtures/reference.json` is generated, never hand-edited.
   `Upstream/` holds the ports of the source repo's `__tests__/*.test.ts`, one C# file per suite.
@@ -96,8 +96,8 @@ call, plus a streaming overload). `RecognizerResult` has Catalyst.Presidio's sha
 - `Analyze(text, AnalyzeOptions?)` is the one place behaviour may depart from the reference, and only
   when the caller asks:
   - `WithCapitalizedParticles(false)` skips `NerDetector.RescueCapitalizedParticles`.
-  - `AddHint(type, params values)` accumulates values per type in a dictionary allocated on the first
-    hint, and validates the type eagerly. The hints compile lazily into `Detection/HintSet`, and adding
+  - `AddHint(PiiLabel, params values)` accumulates values per label in a dictionary allocated on the
+    first hint. The hints compile lazily into `Detection/HintSet`, and adding
     one after use invalidates the compiled set. Analysis then adds every hint occurrence the
     layers missed, with score 1, overriding the keep-set. It also extends spans over hint words in the
     repair loop (`ExtendOverHintWords`): a leftward pass first, then a rightward one, with the name
