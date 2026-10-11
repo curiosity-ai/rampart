@@ -1,10 +1,10 @@
 using System.Runtime.InteropServices;
-using Rampart.Buffers;
-using Rampart.Detection;
-using Rampart.Model;
-using Rampart.Ner;
+using Catalyst.Rampart.Buffers;
+using Catalyst.Rampart.Detection;
+using Catalyst.Rampart.Model;
+using Catalyst.Rampart.Ner;
 
-namespace Rampart;
+namespace Catalyst.Rampart;
 
 /// <summary>Options for <see cref="RampartAnalyzer"/>.</summary>
 public sealed class RampartOptions

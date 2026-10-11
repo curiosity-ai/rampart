@@ -1,5 +1,5 @@
 using System.Diagnostics;
-using Rampart;
+using Catalyst.Rampart;
 
 // redact — an interactive terminal for the redaction engine, mirroring upstream's `bun run redact`
 // (cli/redact.ts). Type a message; it prints what a cloaked call would send, the entities found and

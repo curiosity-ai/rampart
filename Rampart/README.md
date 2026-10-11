@@ -18,7 +18,7 @@ dotnet add package Catalyst.Rampart
 ## Quick start
 
 ```csharp
-using Rampart;
+using Catalyst.Rampart;
 
 var analyzer = new RampartAnalyzer();     // thread-safe, share one
 var anonymizer = new RampartAnonymizer();
@@ -143,7 +143,7 @@ await foreach (var chunk in cloaker.CloakAsync(text, analyzer.Analyze(text), clo
 ## Options
 
 ```csharp
-using Rampart.Model;
+using Catalyst.Rampart.Model;
 
 var analyzer = new RampartAnalyzer(new RampartOptions
 {

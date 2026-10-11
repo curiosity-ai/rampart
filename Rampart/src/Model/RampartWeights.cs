@@ -1,6 +1,6 @@
-using Rampart.Onnx;
+using Catalyst.Rampart.Onnx;
 
-namespace Rampart.Model;
+namespace Catalyst.Rampart.Model;
 
 /// <summary>A uint8 embedding table with one per-tensor scale and zero point (ONNX <c>DequantizeLinear</c>).</summary>
 internal sealed class QuantizedEmbedding(byte[] data, int rows, int dim, float scale, byte zeroPoint)

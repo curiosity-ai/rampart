@@ -3,7 +3,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
 
-namespace Rampart.Model;
+namespace Catalyst.Rampart.Model;
 
 /// <summary>
 /// Single-threaded <c>C = A · B (+ bias)</c> for row-major A (<c>m × k</c>, row stride <c>lda</c>),

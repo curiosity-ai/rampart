@@ -1,6 +1,6 @@
-using Rampart.Buffers;
+using Catalyst.Rampart.Buffers;
 
-namespace Rampart.Detection;
+namespace Catalyst.Rampart.Detection;
 
 /// <summary>
 /// Span reconciliation and the default-deny policy. Detectors (heuristic + NER) emit overlapping,

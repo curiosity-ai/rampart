@@ -1,7 +1,7 @@
-using Rampart.Detection;
-using Rampart.Ner;
+using Catalyst.Rampart.Detection;
+using Catalyst.Rampart.Ner;
 
-namespace Rampart.Tests.Upstream;
+namespace Catalyst.Rampart.Tests.Upstream;
 
 /// <summary>Port of <c>__tests__/premask.test.ts</c>.</summary>
 public sealed class PremaskTests

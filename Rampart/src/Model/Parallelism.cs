@@ -1,6 +1,6 @@
 using System.Runtime.ExceptionServices;
 
-namespace Rampart.Model;
+namespace Catalyst.Rampart.Model;
 
 /// <summary>A unit of parallel work over the index range <c>[from, to)</c>.</summary>
 internal interface IParallelJob

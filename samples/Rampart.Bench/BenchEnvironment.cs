@@ -2,7 +2,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
-using Rampart.Model;
+using Catalyst.Rampart.Model;
 
 /// <summary>
 /// Printed before every benchmark: what machine this is, and how fast it is right now. On a shared

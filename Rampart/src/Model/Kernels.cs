@@ -4,7 +4,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
 
-namespace Rampart.Model;
+namespace Catalyst.Rampart.Model;
 
 /// <summary>The elementwise and row-wise kernels of a BERT encoder, vectorized where it pays.</summary>
 internal static class Kernels

@@ -13,7 +13,7 @@ No ONNX Runtime, no Python, no network: the encoder is evaluated directly from t
 layer by layer against ONNX Runtime, and end to end against the original JavaScript package.
 
 ```csharp
-using Rampart;
+using Catalyst.Rampart;
 
 var analyzer = new RampartAnalyzer();     // thread-safe, share one
 var text = "My name is Alex Rivera and my SSN is 472-81-0094.";

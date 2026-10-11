@@ -1,12 +1,12 @@
 using System.Collections.Frozen;
 using System.Globalization;
 using System.Text;
-using Rampart.Buffers;
-using Rampart.Detection;
-using Rampart.Model;
-using Rampart.Tokenization;
+using Catalyst.Rampart.Buffers;
+using Catalyst.Rampart.Detection;
+using Catalyst.Rampart.Model;
+using Catalyst.Rampart.Tokenization;
 
-namespace Rampart.Ner;
+namespace Catalyst.Rampart.Ner;
 
 /// <summary>A contextual PII detector: text in, spans over that text out.</summary>
 internal interface INerDetector

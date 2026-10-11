@@ -1,6 +1,6 @@
 using System.Collections.Frozen;
 
-namespace Rampart;
+namespace Catalyst.Rampart;
 
 /// <summary>Every entity class the heuristics and the NER model can emit.</summary>
 public enum PiiLabel

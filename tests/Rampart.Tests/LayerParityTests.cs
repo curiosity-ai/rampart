@@ -1,6 +1,6 @@
-using Rampart.Model;
+using Catalyst.Rampart.Model;
 
-namespace Rampart.Tests;
+namespace Catalyst.Rampart.Tests;
 
 /// <summary>
 /// The C# encoder against ONNX Runtime running the published graph, compared at every intermediate

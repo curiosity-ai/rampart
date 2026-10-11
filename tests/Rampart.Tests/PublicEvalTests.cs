@@ -1,4 +1,4 @@
-namespace Rampart.Tests;
+namespace Catalyst.Rampart.Tests;
 
 /// <summary>
 /// The upstream package's public end-to-end eval (<c>eval/public-cases.ts</c>, 58 cases in 0.1.3) with its

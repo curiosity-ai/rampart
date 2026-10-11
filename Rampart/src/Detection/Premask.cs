@@ -1,6 +1,6 @@
-using Rampart.Buffers;
+using Catalyst.Rampart.Buffers;
 
-namespace Rampart.Detection;
+namespace Catalyst.Rampart.Detection;
 
 /// <summary>A masked copy of the input plus a map from each masked character to raw offsets.</summary>
 /// <param name="Masked">Input with heuristic spans replaced by sentinel tokens.</param>

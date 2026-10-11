@@ -1,10 +1,10 @@
 using System.Buffers;
 using System.Numerics.Tensors;
 using System.Reflection;
-using Rampart.Onnx;
-using Rampart.Tokenization;
+using Catalyst.Rampart.Onnx;
+using Catalyst.Rampart.Tokenization;
 
-namespace Rampart.Model;
+namespace Catalyst.Rampart.Model;
 
 /// <summary>Loading options for <see cref="RampartModel"/>.</summary>
 public sealed class RampartModelOptions

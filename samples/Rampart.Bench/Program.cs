@@ -1,8 +1,8 @@
 using System.Diagnostics;
 using System.Text.RegularExpressions;
-using Rampart;
-using Rampart.Model;
-using Rampart.Tests;
+using Catalyst.Rampart;
+using Catalyst.Rampart.Model;
+using Catalyst.Rampart.Tests;
 
 // Rampart's benchmark harness. Every mode first prints the machine and a calibration (SIMD GEMM
 // throughput, memory bandwidth, CPU steal) so results from a contended VM can be told apart from
@@ -53,15 +53,15 @@ if (args.Contains("--gemm"))
     {
         var a = R(m * lda); var b = R(k * ldb); var c = new float[m * ldc]; var bias = R(n);
         double flops = 2.0 * m * n * k;
-        var t = Measure(() => { for (int r = 0; r < 10; r++) Rampart.Model.Gemm.Multiply(a, lda, b, ldb, c, ldc, m, n, k, bias); }, 30) / 10;
+        var t = Measure(() => { for (int r = 0; r < 10; r++) Catalyst.Rampart.Model.Gemm.Multiply(a, lda, b, ldb, c, ldc, m, n, k, bias); }, 30) / 10;
         Console.WriteLine($"  {name,-42} {t * 1000,8:F1} us  {flops / t / 1e6,6:F1} GFLOPS");
     }
     var lin = RampartModel.Default.Weights.Layers[0].Output; // K = 1536, N = 384
-    var dq = new float[lin.K * Rampart.Model.Q4Linear.Tile];
+    var dq = new float[lin.K * Catalyst.Rampart.Model.Q4Linear.Tile];
     var td = Measure(() => { for (int t = 0; t < lin.Tiles; t++) lin.DequantizeTile(t, dq); }, 30);
     Console.WriteLine($"  {"dequantize 1536 x 384 (12 panels)",-42} {td * 1000,8:F1} us  {td * 1e6 / (lin.K * lin.N),6:F3} ns/weight");
     var rows = R(48 * 512);
-    var ts = Measure(() => { for (int r = 0; r < 48; r++) Rampart.Model.Kernels.SoftmaxInPlace(rows.AsSpan(r * 512, 512)); }, 30);
+    var ts = Measure(() => { for (int r = 0; r < 48; r++) Catalyst.Rampart.Model.Kernels.SoftmaxInPlace(rows.AsSpan(r * 512, 512)); }, 30);
     Console.WriteLine($"  {"softmax 48 rows x 512",-42} {ts * 1000,8:F1} us  {ts * 1e6 / (48 * 512),6:F2} ns/element");
     var tm = Measure(() => { for (int r = 0; r < 48; r++) System.Numerics.Tensors.TensorPrimitives.Max(rows.AsSpan(r * 512, 512)); }, 30);
     Console.WriteLine($"  {"  of which TensorPrimitives.Max",-42} {tm * 1000,8:F1} us");
@@ -70,7 +70,7 @@ if (args.Contains("--gemm"))
     var g = R(512 * 1536);
     var g0 = (float[])g.Clone();
     var tc = Measure(() => g0.CopyTo(g), 30);
-    var tg = Measure(() => { g0.CopyTo(g); Rampart.Model.Kernels.Gelu(g); }, 30) - tc;
+    var tg = Measure(() => { g0.CopyTo(g); Catalyst.Rampart.Model.Kernels.Gelu(g); }, 30) - tc;
     Console.WriteLine($"  {"gelu 512 x 1536",-42} {tg * 1000,8:F1} us  {tg * 1e6 / g.Length,6:F2} ns/element");
     return;
 }
@@ -92,9 +92,9 @@ if (args.Contains("--attention"))
                 v.AsSpan(j * W + h * D, D).CopyTo(vh.AsSpan(h * T * D + j * D, D));
             }
     }, 20);
-    double scores = Measure(() => { for (int h = 0; h < H; h++) for (int i0 = 0; i0 < T; i0 += B) Rampart.Model.Gemm.Multiply(q.AsSpan(i0 * W + h * D), W, kt.AsSpan(h * T * D, T * D), T, probs.AsSpan((h * T + i0) * T, Math.Min(B, T - i0) * T), T, Math.Min(B, T - i0), T, D); }, 20);
-    double soft = Measure(() => { for (int r = 0; r < H * T; r++) Rampart.Model.Kernels.SoftmaxInPlace(probs.AsSpan(r * T, T)); }, 20);
-    double context = Measure(() => { for (int h = 0; h < H; h++) for (int i0 = 0; i0 < T; i0 += B) Rampart.Model.Gemm.Multiply(probs.AsSpan((h * T + i0) * T, Math.Min(B, T - i0) * T), T, vh.AsSpan(h * T * D, T * D), D, ctx.AsSpan(i0 * W + h * D), W, Math.Min(B, T - i0), D, T); }, 20);
+    double scores = Measure(() => { for (int h = 0; h < H; h++) for (int i0 = 0; i0 < T; i0 += B) Catalyst.Rampart.Model.Gemm.Multiply(q.AsSpan(i0 * W + h * D), W, kt.AsSpan(h * T * D, T * D), T, probs.AsSpan((h * T + i0) * T, Math.Min(B, T - i0) * T), T, Math.Min(B, T - i0), T, D); }, 20);
+    double soft = Measure(() => { for (int r = 0; r < H * T; r++) Catalyst.Rampart.Model.Kernels.SoftmaxInPlace(probs.AsSpan(r * T, T)); }, 20);
+    double context = Measure(() => { for (int h = 0; h < H; h++) for (int i0 = 0; i0 < T; i0 += B) Catalyst.Rampart.Model.Gemm.Multiply(probs.AsSpan((h * T + i0) * T, Math.Min(B, T - i0) * T), T, vh.AsSpan(h * T * D, T * D), D, ctx.AsSpan(i0 * W + h * D), W, Math.Min(B, T - i0), D, T); }, 20);
     double flops = 2.0 * T * T * D * H;
     // Kᵀ packed in 32-key panels: kp[h][jb][d][32], so each column block of B is one contiguous 4 KB panel.
     var kp = new float[H * T * D];
@@ -109,7 +109,7 @@ if (args.Contains("--attention"))
         for (int h = 0; h < H; h++)
             for (int i0 = 0; i0 < T; i0 += B)
                 for (int jb = 0; jb < T / 32; jb++)
-                    Rampart.Model.Gemm.Multiply(q.AsSpan(i0 * W + h * D), W, kp.AsSpan(h * T * D + jb * D * 32, D * 32), 32, probs.AsSpan((h * T + i0) * T + jb * 32), T, Math.Min(B, T - i0), 32, D);
+                    Catalyst.Rampart.Model.Gemm.Multiply(q.AsSpan(i0 * W + h * D), W, kp.AsSpan(h * T * D + jb * D * 32, D * 32), 32, probs.AsSpan((h * T + i0) * T + jb * 32), T, Math.Min(B, T - i0), 32, D);
     }, 20);
     Console.WriteLine($"  pack K/V  {pack,7:F2} ms   (panels: {packPanels:F2} ms)");
     Console.WriteLine($"  scores, panel-packed Kt {scoresPanels,7:F2} ms  {flops / scoresPanels / 1e6,6:F1} GFLOPS");
@@ -132,10 +132,10 @@ if (args.Contains("--alloc-parts"))
     }
     Probe("Q4Linear.Forward", () => w.Layers[0].Query.Forward(x, 30, y, 1));
     Probe("Classifier.Forward (remainder)", () => w.Classifier.Forward(x, 30, y, 1));
-    Probe("AddLayerNorm", () => Rampart.Model.Kernels.AddLayerNorm(x, x, y, 30, w.Layers[0].AttentionNorm.Gamma, w.Layers[0].AttentionNorm.Beta, 1e-12f));
-    Probe("Gelu", () => Rampart.Model.Kernels.Gelu(y.AsSpan(0, 30 * 1536)));
-    Probe("Softmax", () => Rampart.Model.Kernels.SoftmaxInPlace(y.AsSpan(0, 30)));
-    Probe("Heuristics.Detect", () => Rampart.Detection.Heuristics.Detect(message));
+    Probe("AddLayerNorm", () => Catalyst.Rampart.Model.Kernels.AddLayerNorm(x, x, y, 30, w.Layers[0].AttentionNorm.Gamma, w.Layers[0].AttentionNorm.Beta, 1e-12f));
+    Probe("Gelu", () => Catalyst.Rampart.Model.Kernels.Gelu(y.AsSpan(0, 30 * 1536)));
+    Probe("Softmax", () => Catalyst.Rampart.Model.Kernels.SoftmaxInPlace(y.AsSpan(0, 30)));
+    Probe("Heuristics.Detect", () => Catalyst.Rampart.Detection.Heuristics.Detect(message));
     var ids30 = tokenizer.Encode(message);
     var lg = new float[512 * 35];
     Probe("ComputeLogits(30, span)", () => model.ComputeLogits(ids30, lg));
@@ -149,7 +149,7 @@ if (args.Contains("--alloc"))
     var ids30 = tokenizer.Encode(message);
     var ids512 = Window(510);
     var logits = new float[512 * model.Labels.Count];
-    var ner = new Rampart.Ner.NerDetector(model);
+    var ner = new Catalyst.Rampart.Ner.NerDetector(model);
     foreach (var (name, action) in new (string, Action)[]
     {
         ("ComputeLogits(30, span)", () => model.ComputeLogits(ids30, logits)),
@@ -157,7 +157,7 @@ if (args.Contains("--alloc"))
         ("CountTokens(message)", () => tokenizer.CountTokens(message)),
         ("Encode(message)", () => tokenizer.Encode(message)),
         ("NerDetector.Detect(message)", () => ner.Detect(message)),
-        ("Heuristics(message)", () => Rampart.Detection.Heuristics.Detect(message)),
+        ("Heuristics(message)", () => Catalyst.Rampart.Detection.Heuristics.Detect(message)),
         ("Analyzer.Detect(message)", () => analyzerA.Detect(message)),
         ("Analyze(message)", () => analyzerA.Analyze(message)),
         ("Analyze + cloak(message)", () => new RampartCloaker().Cloak(message, analyzerA.Analyze(message))),

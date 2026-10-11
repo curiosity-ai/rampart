@@ -6,8 +6,10 @@ Deterministic recognizers + a 4-bit MiniLM token classifier + default-deny place
 
 ## Layout
 
-- `Rampart/` — the library (net10.0, package id `Catalyst.Rampart`: the id `Rampart` on nuget.org belongs
-  to an unrelated package; the namespace and assembly stay `Rampart`).
+- `Rampart/` — the library (net10.0). Package id, assembly and root namespace are `Catalyst.Rampart`
+  (the id `Rampart` on nuget.org belongs to an unrelated package); sub-namespaces follow the folders
+  (`Catalyst.Rampart.Model`, `.Ner`, …). Tests are `Catalyst.Rampart.Tests`. The embedded resource names
+  (`Rampart.model_q4.onnx`, …) are explicit `LogicalName`s and do not follow the namespace.
   - `README.md` — the package readme (NuGet page): consumer samples. The repo-root README covers the
     port, validation and benchmarks.
   - `Resources/` — `model_q4.onnx`, `vocab.txt`, `config.json`, `LICENSE` (CC BY 4.0), byte-for-byte

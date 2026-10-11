@@ -1,9 +1,9 @@
 using System.Buffers;
-using Rampart.Buffers;
-using Rampart.Model;
-using Rampart.Tokenization;
+using Catalyst.Rampart.Buffers;
+using Catalyst.Rampart.Model;
+using Catalyst.Rampart.Tokenization;
 
-namespace Rampart.Ner;
+namespace Catalyst.Rampart.Ner;
 
 /// <summary>
 /// One token-classification row, shaped like a transformers.js <c>token-classification</c> result.

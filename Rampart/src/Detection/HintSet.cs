@@ -1,7 +1,7 @@
 using System.Globalization;
-using Rampart.Tokenization;
+using Catalyst.Rampart.Tokenization;
 
-namespace Rampart.Detection;
+namespace Catalyst.Rampart.Detection;
 
 /// <summary>
 /// The hints of an <see cref="AnalyzeOptions"/>, compiled: one phrase per value to report wherever it

@@ -1,7 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 
-namespace Rampart.Tests;
+namespace Catalyst.Rampart.Tests;
 
 /// <summary>The public surface: the Catalyst.Presidio flow of analyzer, anonymizer and cloaker.</summary>
 public sealed class AnalyzerTests

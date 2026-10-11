@@ -1,8 +1,8 @@
 using System.Diagnostics;
-using Rampart;
-using Rampart.Model;
-using Rampart.Tests;
-using Rampart.Tokenization;
+using Catalyst.Rampart;
+using Catalyst.Rampart.Model;
+using Catalyst.Rampart.Tests;
+using Catalyst.Rampart.Tokenization;
 
 /// <summary>
 /// The engine comparison: a token-count sweep with every engine measured in this one process, in
