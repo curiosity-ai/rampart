@@ -1,7 +1,7 @@
-# Builds, tests and publishes the Rampart NuGet package.
+# Builds, tests and publishes the Catalyst.Rampart NuGet package.
 #
 # A push to main runs the test suite (layer-by-layer and end-to-end parity included) and, only if it
-# passes, packs Rampart with a CalVer version (yy.M.<buildId>) and pushes it to nuget.org through the
+# passes, packs Catalyst.Rampart with a CalVer version (yy.M.<buildId>) and pushes it to nuget.org through the
 # 'nuget-curiosity-org' service connection. Pull request builds run the same build and tests and stop
 # before packing.
 
@@ -74,7 +74,7 @@ steps:
   displayName: 'test'
 
 - task: DotNetCoreCLI@2
-  displayName: 'pack Rampart'
+  displayName: 'pack Catalyst.Rampart'
   condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
   inputs:
     command: 'pack'

@@ -7,7 +7,8 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
     <RootNamespace>Rampart</RootNamespace>
-    <PackageId>Rampart</PackageId>
+    <!-- "Rampart" on nuget.org belongs to an unrelated package; the namespace and assembly stay Rampart. -->
+    <PackageId>Catalyst.Rampart</PackageId>
     <Description>Rampart for .NET: on-device PII detection and reversible redaction. A native C# port of National Design Studio's Rampart (deterministic recognizers + a 4-bit MiniLM token classifier), with the model embedded.</Description>
     <PackageTags>PII;NLP;redaction;anonymization;privacy;LLM;NER</PackageTags>
     <PackageLicenseExpression>MIT AND CC-BY-4.0</PackageLicenseExpression>

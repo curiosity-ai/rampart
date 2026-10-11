@@ -12,7 +12,7 @@ MiniLM token classifier. The model is embedded in the package and runs in manage
 Runtime, Python or network calls.
 
 ```
-dotnet add package Rampart
+dotnet add package Catalyst.Rampart
 ```
 
 ## Quick start
