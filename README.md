@@ -70,6 +70,7 @@ The public surface is the Catalyst.Presidio flow and nothing else:
 |---|---|
 | `PresidioAnalyzer.Analyze(text)` → `List<RecognizerResult>` | `RampartAnalyzer.Analyze(text)` → `List<RecognizerResult>` |
 | `RecognizerResult` (`Start`, `End` inclusive, `EntityType`, `Score`, `Length`) | `RecognizerResult`, the same shape |
+| entity type strings (`"EMAIL_ADDRESS"`, …) | `EntityTypes` constants (`EntityTypes.Email` is `"EMAIL"`, …) |
 | `PresidioAnonymizer.Anonymize(text, results, "mask" / "replace" / "redact" / "hash", maskChar, replacement)` | `RampartAnonymizer.Anonymize`, the same signature and operators |
 | `PresidioCloaker.CloakAsync(document, results, Func<string, Task<string>>)` and its streaming overload | `RampartCloaker.CloakAsync(text, results, …)`, both overloads |
 | `PresidioAnalyzer.For(language).AddAllRecognizers()` | `new RampartAnalyzer(options)`: one multilingual model; `RampartOptions` sets `KeepLabels`, `MinScore` and the `Model` (`RampartModel.Default`, `Load(options)`, `LoadFromDirectory`) |
@@ -182,10 +183,23 @@ the Git LFS object ids of `model/` in the source repository.
 
 ### Deliberate differences from the reference
 
-The port reproduces the reference's behaviour, quirks included: for example, the particle rescue that
-keeps "De La Croix" together also pulls any capitalized word of up to four letters right before a
-name into it, so "I'm Alex" and "Call Maria" each redact as one GIVEN_NAME (over-redaction, not a leak). One
-reference bug is fixed rather than reproduced: the reference's `foldForModel` records one offset per
+By default the port reproduces the reference's behaviour, quirks included. For example, the
+particle rescue that keeps "De La Croix" together also pulls any capitalized word of up to four
+letters next to a name into it, so "I'm Alex" and "Call Maria" each redact as one GIVEN_NAME. That
+over-redacts but leaks nothing.
+
+`AnalyzeOptions`, passed per call to `Analyze`, departs from the reference only when asked:
+- `.WithCapitalizedParticles(false)` turns the rescue off. "Alex" and "Maria" are then reported
+  alone, but short name parts the model did not tag can leak: "Juan De La Vega Ruiz" gives only
+  "Juan" and "Ruiz".
+- `.AddHint(PiiLabel, params values)` adds values that are always reported, such as the sender's
+  name. Values accumulate per type across calls. The words of those values also extend spans of their type over neighbouring words, whatever
+  their length or case, which covers such parts for known names.
+
+The default options are pinned to the reference on every fixture case
+(`AnalyzeOptionsTests.DefaultOptionsAreTheReference`).
+
+One reference bug is fixed rather than reproduced: the reference's `foldForModel` records one offset per
 code point while its folded string grows by two UTF-16 units for an emoji or other astral character,
 so every NER span after such a character is shifted — it leaks part of the name ("A[GIVEN_NAME_1]")
 and can emit a span with an undefined end. The port keeps the offsets aligned; the

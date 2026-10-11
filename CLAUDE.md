@@ -21,8 +21,9 @@ Deterministic recognizers + a 4-bit MiniLM token classifier + default-deny place
     (port of `detectNer`: windows, folding, BIO merge, span repair).
   - `src/Detection/` — `Heuristics`, `Validators`, `Policy` (merge + keep-set), `Premask`.
   - `src/Session/` — `SessionEntityTable` (placeholders), `StreamingReveal`.
-  - `src/` — the public API: `RampartAnalyzer` (+ `RampartOptions`), `RampartAnonymizer`, `RampartCloaker`,
-    `RecognizerResult`; and the internal `ChatGuard` (port of upstream `guard.ts`) and `Types` (labels, `PiiSpan`).
+  - `src/` — the public API: `RampartAnalyzer` (+ `RampartOptions`, `AnalyzeOptions`), `RampartAnonymizer`,
+    `RampartCloaker`, `RecognizerResult`, `EntityTypes` (the reported entity type names as constants, for comparing results; options take `PiiLabel`; `PiiLabels`
+    maps each `PiiLabel` to them, and `EntityTypesTests` pins one constant per label); and the internal `ChatGuard` (port of upstream `guard.ts`) and `Types` (labels, `PiiSpan`).
 - `tests/Rampart.Tests/` — xunit v3 suite; `Fixtures/reference.json` is generated, never hand-edited.
   `Upstream/` holds the ports of the source repo's `__tests__/*.test.ts`, one C# file per suite.
 - `tools/reference/` — `generate-fixtures.ts`, which runs the ORIGINAL source (a clone) to produce the fixture.
@@ -92,6 +93,18 @@ call, plus a streaming overload). `RecognizerResult` has Catalyst.Presidio's sha
   `End + 1` in).
 - `PipelineParityTests.AnalyzeThenCloak*` pins the public flow to the reference: what `CloakAsync` sends
   must equal upstream `guard.protect` on every fixture case and conversation.
+- `Analyze(text, AnalyzeOptions?)` is the one place behaviour may depart from the reference, and only
+  when the caller asks:
+  - `WithCapitalizedParticles(false)` skips `NerDetector.RescueCapitalizedParticles`.
+  - `AddHint(PiiLabel, params values)` accumulates values per label in a dictionary allocated on the
+    first hint. The hints compile lazily into `Detection/HintSet`, and adding
+    one after use invalidates the compiled set. Analysis then adds every hint occurrence the
+    layers missed, with score 1, overriding the keep-set. It also extends spans over hint words in the
+    repair loop (`ExtendOverHintWords`): a leftward pass first, then a rightward one, with the name
+    types sharing words.
+  
+  Default options must stay byte-identical to the reference (`AnalyzeOptionsTests.DefaultOptionsAreTheReference`).
+  `ChatGuard`, the parity tests and `Detect(string)` use the defaults.
 
 ## The port is defined by parity — keep it that way
 

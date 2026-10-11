@@ -171,7 +171,99 @@ anonymizer.Anonymize(text, analyzer.Analyze(text), "replace", replacement: "<PII
 // → "Me llamo <PII> <PII> y vivo en la <PII> <PII>, Madrid."
 ```
 
+## Per-call options
+
+`Analyze` takes an optional `AnalyzeOptions` for that call, configured fluently. Without it, or
+with a fresh `new AnalyzeOptions()`, the result is exactly the original Rampart's.
+
+An instance can be reused across calls and threads; its hints are compiled once, on first use.
+Configure it before sharing it.
+
+### The capitalized-particle expansion
+
+To keep names like "De La Croix" or "Van Der Berg" together, the original extends a detected name
+over a short capitalized word next to it (a capital and up to three more letters). That also takes
+in words like "I'm" or "Call":
+
+```csharp
+var text = "Hi, I'm Alex Rivera.";
+
+anonymizer.Anonymize(text, analyzer.Analyze(text), "replace", replacement: "<PII>");
+// → "Hi, <PII> <PII>."             ("I'm Alex" is one GIVEN_NAME)
+
+var options = new AnalyzeOptions().WithCapitalizedParticles(false);
+anonymizer.Anonymize(text, analyzer.Analyze(text, options), "replace", replacement: "<PII>");
+// → "Hi, I'm <PII> <PII>."
+```
+
+Turning the expansion off trades extra redaction for possible leaks. A short part of a name that
+the model did not tag is then left in the text:
+
+```csharp
+var text = "Juan De La Vega Ruiz signed.";
+analyzer.Analyze(text, new AnalyzeOptions().WithCapitalizedParticles(false));
+// → GIVEN_NAME "Juan", SURNAME "Ruiz"     ("De La Vega" is not reported)
+```
+
+Hints, below, close that gap for the names you know.
+
+### Hints: values to always report
+
+When you know values that must never get through, such as the name of the person sending the
+message, add them as hints by entity type:
+
+```csharp
+var sender = new AnalyzeOptions()
+    .AddHint(PiiLabel.GivenName, "Alex")
+    .AddHint(PiiLabel.Surname, "Rivera");
+
+var text = "Ask alex rivera about it, he will know.";
+anonymizer.Anonymize(text, analyzer.Analyze(text), "replace", replacement: "<PII>");
+// → "Ask alex rivera about it, he will know."     (the model finds nothing)
+anonymizer.Anonymize(text, analyzer.Analyze(text, sender), "replace", replacement: "<PII>");
+// → "Ask <PII> <PII> about it, he will know."
+```
+
+- **Always reported.** Every occurrence of a hinted value is reported as its entity type, with
+  score 1. That holds even when the model misses it, and even when the type is in `KeepLabels`.
+- **Several values per type.** A type takes as many values as you like, in one call
+  (`AddHint(PiiLabel.GivenName, "Alex", "Sam")`) or across several. Repeated values are ignored. Each
+  value is matched on its own. Where two values of a type overlap in the text, as with
+  `"De La Vega Ruiz"` and `"Vega"`, their spans are merged into one.
+- **Whole words.** The value's words must match whole words, with any spacing between them: "Al"
+  does not match "Also".
+- **Case.** Matching ignores case by default. For a hint that is also a common word ("Will", "Mark",
+  "May"), call `.WithHintsIgnoringCase(false)`.
+- **Typed.** `AddHint` takes the entity type as a `PiiLabel`, the same enum `KeepLabels` uses.
+
+The words of all of a type's hints also **expand** spans of that type. A detected span grows over the
+hinted words right before it, then over the ones right after it. Unlike the capitalized-particle
+expansion, this works for any word length and any case, and it works with that expansion off. The
+two name types share their words, because the model splits one person's name across `GIVEN_NAME`
+and `SURNAME`:
+
+```csharp
+var text = "Juan De La Vega Ruiz signed.";
+var options = new AnalyzeOptions()
+    .WithCapitalizedParticles(false)
+    .AddHint(PiiLabel.Surname, "De La Vega Ruiz");
+analyzer.Analyze(text, options);
+// → GIVEN_NAME "Juan", SURNAME "De La Vega Ruiz"
+```
+
+The expansion applies wherever those words stand next to a detected span of the type, even when
+the whole value does not appear. For example, the same hint gives "Maria De La Vega Ruiz" as
+GIVEN_NAME "Maria" and SURNAME "De La Vega Ruiz".
+
 ## Entity types
+
+`RecognizerResult.EntityType` is the name as a string, as in Catalyst.Presidio. Each name is also a
+constant on `EntityTypes` (`EntityTypes.GivenName` is `"GIVEN_NAME"`) to compare results with. The
+options take the `PiiLabel` enum (`PiiLabel.GivenName`):
+
+```csharp
+var names = results.Where(r => r.EntityType is EntityTypes.GivenName or EntityTypes.Surname);
+```
 
 | Found by | Entity types |
 |---|---|
@@ -189,7 +281,9 @@ particular:
 - **Names can be missed, or picked up with a neighbouring word.** In
   `"Ask Alex Rivera about it"` nothing is found. In `"Hi, I'm Alex Rivera"` the given name comes out
   as `"I'm Alex"`: the rule that keeps particles such as "De La" with a name also takes in any short
-  capitalized word right before it. That redacts too much, but it does not leak anything.
+  capitalized word right before it. That redacts too much but leaks nothing. For names you know,
+  [hints](#hints-values-to-always-report) fix both. The expansion can also be
+  [turned off](#the-capitalized-particle-expansion).
 - Recall on names in non-Latin scripts is low.
 - Government IDs without a checksum are found only by the model.
 - Adversarial input (zero-width characters, deliberate misspellings, prompt injection) can evade
