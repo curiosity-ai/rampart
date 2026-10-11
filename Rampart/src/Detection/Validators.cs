@@ -1,4 +1,4 @@
-namespace Rampart.Detection;
+namespace Catalyst.Rampart.Detection;
 
 /// <summary>
 /// Validators that turn "a run of digits" into "a <em>valid</em> SSN / card". They suppress false

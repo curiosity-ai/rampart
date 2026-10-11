@@ -1,7 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
 
-namespace Rampart.Session;
+namespace Catalyst.Rampart.Session;
 
 /// <summary>
 /// Streaming placeholder reveal. An assistant streams its reply, so a placeholder can be split

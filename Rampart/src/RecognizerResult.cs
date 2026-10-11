@@ -1,4 +1,4 @@
-namespace Rampart;
+namespace Catalyst.Rampart;
 
 /// <summary>
 /// One recognized PII entity, the shape Catalyst.Presidio uses: offsets into the analyzed text

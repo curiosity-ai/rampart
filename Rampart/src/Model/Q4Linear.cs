@@ -5,7 +5,7 @@ using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.Arm;
 using System.Runtime.Intrinsics.X86;
 
-namespace Rampart.Model;
+namespace Catalyst.Rampart.Model;
 
 /// <summary>
 /// A linear layer whose weight ships in ONNX <c>com.microsoft.MatMulNBits</c> form: 4-bit unsigned

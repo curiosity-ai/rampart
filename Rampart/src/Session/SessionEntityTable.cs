@@ -1,10 +1,10 @@
 using System.Runtime.CompilerServices;
-using Rampart.Buffers;
+using Catalyst.Rampart.Buffers;
 using System.Text.RegularExpressions;
-using Rampart.Detection;
-using Rampart.Tokenization;
+using Catalyst.Rampart.Detection;
+using Catalyst.Rampart.Tokenization;
 
-namespace Rampart.Session;
+namespace Catalyst.Rampart.Session;
 
 /// <summary>Result of scrubbing one message.</summary>
 /// <param name="Text">Text with PII replaced by placeholders. Safe to send or log.</param>

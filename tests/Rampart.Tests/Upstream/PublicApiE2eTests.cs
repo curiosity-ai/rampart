@@ -1,6 +1,6 @@
-using Rampart.Ner;
+using Catalyst.Rampart.Ner;
 
-namespace Rampart.Tests.Upstream;
+namespace Catalyst.Rampart.Tests.Upstream;
 
 /// <summary>
 /// Port of <c>__tests__/public-api-e2e.test.ts</c>: every public eval case through the guard with a

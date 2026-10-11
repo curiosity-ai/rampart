@@ -1,6 +1,6 @@
-using Rampart.Detection;
+using Catalyst.Rampart.Detection;
 
-namespace Rampart.Tests;
+namespace Catalyst.Rampart.Tests;
 
 /// <summary>
 /// <see cref="AnalyzeOptions"/>: the capitalized-particle switch and hints. These depart from the

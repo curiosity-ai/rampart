@@ -1,4 +1,4 @@
-namespace Rampart;
+namespace Catalyst.Rampart;
 
 /// <summary>
 /// The entity type names Rampart reports in <see cref="RecognizerResult.EntityType"/>, one constant

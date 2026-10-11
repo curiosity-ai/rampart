@@ -1,9 +1,9 @@
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
-using Rampart.Model;
-using Rampart.Onnx;
+using Catalyst.Rampart.Model;
+using Catalyst.Rampart.Onnx;
 
-namespace Rampart.Tests;
+namespace Catalyst.Rampart.Tests;
 
 /// <summary>
 /// The reference implementation: the published <c>model_q4.onnx</c>, byte-for-byte the resource the

@@ -1,7 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 
-namespace Rampart;
+namespace Catalyst.Rampart;
 
 /// <summary>
 /// One-way anonymization of analyzed text, like Catalyst.Presidio's <c>PresidioAnonymizer</c>: each

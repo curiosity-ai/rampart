@@ -1,6 +1,6 @@
-using Rampart.Model;
+using Catalyst.Rampart.Model;
 
-namespace Rampart.Tests;
+namespace Catalyst.Rampart.Tests;
 
 internal sealed class TraceRecorder : IForwardTrace
 {

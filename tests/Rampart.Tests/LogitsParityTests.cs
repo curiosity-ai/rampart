@@ -1,6 +1,6 @@
-using Rampart.Model;
+using Catalyst.Rampart.Model;
 
-namespace Rampart.Tests;
+namespace Catalyst.Rampart.Tests;
 
 /// <summary>
 /// Final logits against ONNX Runtime with full graph optimization (fused attention, LayerNorm and

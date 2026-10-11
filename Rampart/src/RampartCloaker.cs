@@ -1,7 +1,7 @@
 using System.Runtime.CompilerServices;
-using Rampart.Session;
+using Catalyst.Rampart.Session;
 
-namespace Rampart;
+namespace Catalyst.Rampart;
 
 /// <summary>
 /// Reversible cloaking for calls to an external service (an LLM, a translation API, …), like

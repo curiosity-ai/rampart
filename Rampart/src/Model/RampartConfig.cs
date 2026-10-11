@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace Rampart.Model;
+namespace Catalyst.Rampart.Model;
 
 /// <summary>The subset of the Hugging Face <c>config.json</c> the encoder needs.</summary>
 internal sealed class RampartConfig

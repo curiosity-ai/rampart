@@ -1,4 +1,4 @@
-namespace Rampart.Tests;
+namespace Catalyst.Rampart.Tests;
 
 /// <summary>Inputs shared by the parity tests: several languages, the premask sentinels, edge cases.</summary>
 internal static class Corpus

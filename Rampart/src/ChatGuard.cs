@@ -1,6 +1,6 @@
-using Rampart.Session;
+using Catalyst.Rampart.Session;
 
-namespace Rampart;
+namespace Catalyst.Rampart;
 
 /// <summary>
 /// The reference's <c>ChatGuard</c> (upstream <c>src/guard.ts</c>), kept internal: detection, the

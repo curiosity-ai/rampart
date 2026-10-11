@@ -6,7 +6,10 @@ Deterministic recognizers + a 4-bit MiniLM token classifier + default-deny place
 
 ## Layout
 
-- `Rampart/` — the library (net10.0, package id `Rampart`).
+- `Rampart/` — the library (net10.0). Package id, assembly and root namespace are `Catalyst.Rampart`
+  (the id `Rampart` on nuget.org belongs to an unrelated package); sub-namespaces follow the folders
+  (`Catalyst.Rampart.Model`, `.Ner`, …). Tests are `Catalyst.Rampart.Tests`. The embedded resource names
+  (`Rampart.model_q4.onnx`, …) are explicit `LogicalName`s and do not follow the namespace.
   - `README.md` — the package readme (NuGet page): consumer samples. The repo-root README covers the
     port, validation and benchmarks.
   - `Resources/` — `model_q4.onnx`, `vocab.txt`, `config.json`, `LICENSE` (CC BY 4.0), byte-for-byte
@@ -30,7 +33,7 @@ Deterministic recognizers + a 4-bit MiniLM token classifier + default-deny place
 - `samples/Rampart.Bench/` — latency sweep vs ONNX Runtime, per-stage profile, kernel and allocation
   modes; `BENCHMARK-RESULT.md` holds the published numbers.
 - `samples/Rampart.Redact/` — interactive redactor, the counterpart of upstream's `cli/redact.ts`.
-- `.devops/azure-pipelines.yml` — Azure DevOps: build, test, then pack and push `Rampart` to nuget.org
+- `.devops/azure-pipelines.yml` — Azure DevOps: build, test, then pack and push `Catalyst.Rampart` to nuget.org
   (CalVer `yy.M.<buildId>`, service connection `nuget-curiosity-org`) on pushes to `main`; PR builds
   stop after the tests.
 

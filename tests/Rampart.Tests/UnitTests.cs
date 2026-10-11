@@ -1,10 +1,10 @@
 using System.Security.Cryptography;
-using Rampart.Detection;
-using Rampart.Model;
-using Rampart.Ner;
-using Rampart.Session;
+using Catalyst.Rampart.Detection;
+using Catalyst.Rampart.Model;
+using Catalyst.Rampart.Ner;
+using Catalyst.Rampart.Session;
 
-namespace Rampart.Tests;
+namespace Catalyst.Rampart.Tests;
 
 public sealed class ResourceTests
 {
@@ -287,7 +287,7 @@ public sealed class GemmTests
     {
         // Decode layer 0's query weight straight from the ONNX tensors and compare every weight with the
         // permuted copy, both through the scalar accessor and the SIMD tile dequantizer.
-        var onnx = Rampart.Onnx.OnnxModel.Parse(RampartModel.ReadResource(typeof(RampartModel).Assembly, "Rampart.model_q4.onnx"));
+        var onnx = Catalyst.Rampart.Onnx.OnnxModel.Parse(RampartModel.ReadResource(typeof(RampartModel).Assembly, "Rampart.model_q4.onnx"));
         var mm = onnx.Nodes.Single(n => n.Outputs[0] == OnnxNames.MatMul(0, "attention/self/query"));
         var packed = onnx.GetTensor(mm.Inputs[1]).AsBytes();
         var scales = onnx.GetTensor(mm.Inputs[2]).AsFloats();

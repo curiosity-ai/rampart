@@ -1,8 +1,8 @@
-using Rampart.Detection;
-using Rampart.Ner;
-using Rampart.Session;
+using Catalyst.Rampart.Detection;
+using Catalyst.Rampart.Ner;
+using Catalyst.Rampart.Session;
 
-namespace Rampart.Tests.Upstream;
+namespace Catalyst.Rampart.Tests.Upstream;
 
 /// <summary>Port of <c>__tests__/pipeline.test.ts</c>.</summary>
 public sealed class PipelineTests

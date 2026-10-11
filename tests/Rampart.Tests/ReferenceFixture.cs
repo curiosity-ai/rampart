@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace Rampart.Tests;
+namespace Catalyst.Rampart.Tests;
 
 /// <summary>
 /// Outputs of the original Rampart pipeline (@nationaldesignstudio/rampart 0.1.3 on transformers.js

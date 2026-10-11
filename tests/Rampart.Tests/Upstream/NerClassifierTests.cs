@@ -1,8 +1,8 @@
 using System.Text;
 using System.Text.RegularExpressions;
-using Rampart.Ner;
+using Catalyst.Rampart.Ner;
 
-namespace Rampart.Tests.Upstream;
+namespace Catalyst.Rampart.Tests.Upstream;
 
 /// <summary>
 /// Port of <c>__tests__/ner-classifier.test.ts</c>: <see cref="NerDetector"/> driven by stand-in

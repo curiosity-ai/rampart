@@ -13,7 +13,7 @@ No ONNX Runtime, no Python, no network: the encoder is evaluated directly from t
 layer by layer against ONNX Runtime, and end to end against the original JavaScript package.
 
 ```csharp
-using Rampart;
+using Catalyst.Rampart;
 
 var analyzer = new RampartAnalyzer();     // thread-safe, share one
 var text = "My name is Alex Rivera and my SSN is 472-81-0094.";
@@ -29,7 +29,7 @@ var answer = await cloaker.CloakAsync(text, results, cloaked => CallServiceAsync
 ```
 
 ```
-dotnet add package Rampart
+dotnet add package Catalyst.Rampart
 ```
 
 [`Rampart/README.md`](Rampart/README.md) is the package's own readme, also shown on NuGet: the
@@ -221,7 +221,7 @@ Requires the .NET 10 SDK. Tests use xunit v3 on Microsoft.Testing.Platform (`glo
 
 [`.devops/azure-pipelines.yml`](.devops/azure-pipelines.yml) is the Azure DevOps pipeline. On every
 push to `main` it builds the solution and runs the whole test suite. Only if that passes does it
-pack `Rampart` with a CalVer version (`yy.M.<buildId>`) and push it to nuget.org through the
+pack the library as `Catalyst.Rampart` with a CalVer version (`yy.M.<buildId>`) and push it to nuget.org through the
 `nuget-curiosity-org` service connection. Pull request builds run the build and tests and stop
 there.
 

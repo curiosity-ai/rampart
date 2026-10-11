@@ -1,6 +1,6 @@
-using Rampart.Detection;
+using Catalyst.Rampart.Detection;
 
-namespace Rampart.Tests.Upstream;
+namespace Catalyst.Rampart.Tests.Upstream;
 
 /// <summary>Port of <c>__tests__/heuristics.test.ts</c> (github.com/nationaldesignstudio/rampart).</summary>
 public sealed class HeuristicsTests

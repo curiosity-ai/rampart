@@ -1,10 +1,10 @@
 using System.Buffers;
 using System.Collections.Frozen;
-using Rampart.Buffers;
+using Catalyst.Rampart.Buffers;
 using System.Globalization;
 using System.Text;
 
-namespace Rampart.Tokenization;
+namespace Catalyst.Rampart.Tokenization;
 
 /// <summary>
 /// BERT-uncased WordPiece tokenizer, reproducing the tokenizer the Rampart pipeline runs in

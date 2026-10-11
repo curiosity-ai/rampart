@@ -1,7 +1,7 @@
 using System.Buffers;
 using System.Runtime.CompilerServices;
 
-namespace Rampart.Buffers;
+namespace Catalyst.Rampart.Buffers;
 
 /// <summary>
 /// A growable list over <see cref="ArrayPool{T}.Shared"/>: the scratch storage of the hot paths, so a

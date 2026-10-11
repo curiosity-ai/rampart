@@ -1,6 +1,6 @@
 using System.Text.RegularExpressions;
 
-namespace Rampart.Detection;
+namespace Catalyst.Rampart.Detection;
 
 /// <summary>
 /// Heuristic detectors: the cheap, synchronous, zero-model first pass.

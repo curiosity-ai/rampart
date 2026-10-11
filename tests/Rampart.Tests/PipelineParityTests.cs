@@ -1,8 +1,8 @@
-using Rampart.Detection;
-using Rampart.Model;
-using Rampart.Ner;
+using Catalyst.Rampart.Detection;
+using Catalyst.Rampart.Model;
+using Catalyst.Rampart.Ner;
 
-namespace Rampart.Tests;
+namespace Catalyst.Rampart.Tests;
 
 /// <summary>
 /// Every stage of the C# pipeline against the original JavaScript pipeline, case by case: tokens,

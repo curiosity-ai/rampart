@@ -1,6 +1,6 @@
-using Rampart.Detection;
+using Catalyst.Rampart.Detection;
 
-namespace Rampart;
+namespace Catalyst.Rampart;
 
 /// <summary>
 /// Per-call options for <see cref="RampartAnalyzer.Analyze(string, AnalyzeOptions?)"/>, configured

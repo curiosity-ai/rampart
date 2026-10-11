@@ -2,7 +2,7 @@ using System.Buffers.Binary;
 using System.Runtime.InteropServices;
 using System.Text;
 
-namespace Rampart.Onnx;
+namespace Catalyst.Rampart.Onnx;
 
 /// <summary>ONNX TensorProto.DataType values this reader understands.</summary>
 internal enum OnnxDataType
