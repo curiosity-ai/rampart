@@ -125,13 +125,13 @@ internal sealed class NerDetector : INerDetector
     internal readonly record struct NerSpan(int Start, int End, PiiLabel Label, double Score, int TextStart, int TextEnd);
 
     /// <summary>The allocation-free core of <see cref="Detect"/>: spans over <paramref name="raw"/>, appended to <paramref name="output"/>.</summary>
-    internal void DetectCore(ReadOnlySpan<char> raw, ref PooledList<NerSpan> output)
+    internal void DetectCore(ReadOnlySpan<char> raw, ref PooledList<NerSpan> output, RepairOptions repair = default)
     {
         // Input that fits one window is classified whole — the planner would produce that one window.
         // (For the built-in tokenizer the sum of per-word counts equals the whole-text count.)
         if (_builtIn is not null ? _builtIn.Tokenizer.CountTokens(raw) <= TokenBudget : _classifier.CountTokens is null)
         {
-            DetectWindow(raw, 0, raw.Length, ref output);
+            DetectWindow(raw, 0, raw.Length, ref output, repair);
             return;
         }
 
@@ -144,10 +144,10 @@ internal sealed class NerDetector : INerDetector
 
             if (windows.Count <= 1)
             {
-                DetectWindow(raw, 0, raw.Length, ref output);
+                DetectWindow(raw, 0, raw.Length, ref output, repair);
                 return;
             }
-            foreach (var (start, end) in windows.AsSpan()) DetectWindow(raw, start, end - start, ref all);
+            foreach (var (start, end) in windows.AsSpan()) DetectWindow(raw, start, end - start, ref all, repair);
             MergeSpans(ref all, ref output);
         }
         finally
@@ -296,7 +296,7 @@ internal sealed class NerDetector : INerDetector
     /// in whole-text coordinates, to <paramref name="output"/>. Hyphens are shown to the model as spaces
     /// (a 1:1 substitution, so offsets carry over); all repair logic sees only the window's text.
     /// </summary>
-    private void DetectWindow(ReadOnlySpan<char> raw, int offset, int length, ref PooledList<NerSpan> output)
+    private void DetectWindow(ReadOnlySpan<char> raw, int offset, int length, ref PooledList<NerSpan> output, RepairOptions repair)
     {
         var window = raw.Slice(offset, length);
         var infer = new PooledList<char>(length);
@@ -352,7 +352,7 @@ internal sealed class NerDetector : INerDetector
                 candidates.Add(new Candidate(entity.Start, entity.End, label, entity.Score));
             }
 
-            RepairSpans(window, ref candidates, MinScore);
+            RepairSpans(window, ref candidates, MinScore, repair);
             foreach (var c in candidates.AsSpan())
             {
                 output.Add(new NerSpan(offset + c.Start, offset + c.End, c.Label, c.Score, offset + c.Start, offset + c.End));
@@ -571,15 +571,21 @@ internal sealed class NerDetector : INerDetector
 
     internal readonly record struct Candidate(int Start, int End, PiiLabel Label, double Score);
 
+    /// <summary>
+    /// Departures from the reference's span repair, from <see cref="AnalyzeOptions"/>. The default
+    /// value is the reference: particle rescue on, no hints.
+    /// </summary>
+    internal readonly record struct RepairOptions(bool SkipCapitalizedParticles, HintSet? Hints);
+
     private static bool IsPerson(PiiLabel label) => label is PiiLabel.GivenName or PiiLabel.Surname;
 
     /// <summary>
     /// Keep spans at or above <paramref name="anchorScore"/>; let weaker fragments (≥ <see cref="ExtendScore"/>)
     /// in only where they bridge to a kept span; merge spans joined by name connectors; extend names over
-    /// short capitalized particles — repeated until nothing changes. Leaves the result in
-    /// <paramref name="spans"/>, sorted by (start, end).
+    /// short capitalized particles and over hint words (<see cref="RepairOptions"/>) — repeated until
+    /// nothing changes. Leaves the result in <paramref name="spans"/>, sorted by (start, end).
     /// </summary>
-    private static void RepairSpans(ReadOnlySpan<char> raw, ref PooledList<Candidate> spans, double anchorScore)
+    private static void RepairSpans(ReadOnlySpan<char> raw, ref PooledList<Candidate> spans, double anchorScore, RepairOptions repair = default)
     {
         var kept = new PooledList<Candidate>(spans.Count);
         var weak = new PooledList<Candidate>(spans.Count);
@@ -626,11 +632,30 @@ internal sealed class NerDetector : INerDetector
 
                 for (int i = 0; i < kept.Count; i++)
                 {
+                    if (repair.SkipCapitalizedParticles) break;
                     var repaired = RescueCapitalizedParticles(raw, kept[i], kept.AsSpan(), i);
                     if (repaired.Start != kept[i].Start || repaired.End != kept[i].End)
                     {
                         kept[i] = repaired;
                         changed = true;
+                    }
+                }
+
+                // Hint words: every span takes the words before it first, then the words after it, so
+                // "Juan De La Vega Ruiz" gives the particles to the surname rather than to "Juan".
+                if (repair.Hints is { } hints)
+                {
+                    foreach (bool left in (ReadOnlySpan<bool>)[true, false])
+                    {
+                        for (int i = 0; i < kept.Count; i++)
+                        {
+                            var repaired = ExtendOverHintWords(raw, kept[i], kept.AsSpan(), i, hints, left);
+                            if (repaired.Start != kept[i].Start || repaired.End != kept[i].End)
+                            {
+                                kept[i] = repaired;
+                                changed = true;
+                            }
+                        }
                     }
                 }
             }
@@ -755,6 +780,52 @@ internal sealed class NerDetector : INerDetector
             end += rightLength;
         }
 
+        return start == span.Start && end == span.End ? span : span with { Start = start, End = end };
+    }
+
+    /// <summary>
+    /// Extend a span over the hint words of its type right before it (<paramref name="left"/>) or right
+    /// after it, one whole word at a time and within the neighbouring spans' bounds. Unlike the particle rescue it is not limited to
+    /// short capitalized words, applies to every entity type with hints, and follows the same rules
+    /// about periods: one may follow a single-letter initial on the left, never cross on the right.
+    /// </summary>
+    private static Candidate ExtendOverHintWords(ReadOnlySpan<char> raw, Candidate span, ReadOnlySpan<Candidate> all, int selfIndex, HintSet hints, bool left)
+    {
+        if (!hints.HasWordsFor(span.Label)) return span;
+
+        int leftBound = 0, rightBound = raw.Length;
+        for (int i = 0; i < all.Length; i++)
+        {
+            if (i == selfIndex) continue;
+            var other = all[i];
+            if (other.End <= span.Start && other.End > leftBound) leftBound = other.End;
+            if (other.Start >= span.End && other.Start < rightBound) rightBound = other.Start;
+        }
+
+        int start = span.Start, end = span.End;
+        while (left)
+        {
+            int gapStart = start;
+            while (gapStart > leftBound && start - gapStart < 3 && IsConnector(raw[gapStart - 1])) gapStart--;
+            if (gapStart == start || gapStart == leftBound) break;
+            int wordStart = gapStart;
+            while (wordStart > leftBound && HintSet.IsWordChar(raw[wordStart - 1])) wordStart--;
+            if (wordStart == gapStart || (wordStart > 0 && HintSet.IsWordChar(raw[wordStart - 1]))) break;
+            if (raw[gapStart..start].Contains('.') && gapStart - wordStart != 1) break;
+            if (!hints.IsHintWord(span.Label, raw[wordStart..gapStart])) break;
+            start = wordStart;
+        }
+        while (!left)
+        {
+            int gapEnd = end;
+            while (gapEnd < rightBound && gapEnd - end < 3 && IsConnector(raw[gapEnd])) gapEnd++;
+            if (gapEnd == end || gapEnd == rightBound || raw[end..gapEnd].Contains('.')) break;
+            int wordEnd = gapEnd;
+            while (wordEnd < rightBound && HintSet.IsWordChar(raw[wordEnd])) wordEnd++;
+            if (wordEnd == gapEnd || (wordEnd < raw.Length && HintSet.IsWordChar(raw[wordEnd]))) break;
+            if (!hints.IsHintWord(span.Label, raw[gapEnd..wordEnd])) break;
+            end = wordEnd;
+        }
         return start == span.Start && end == span.End ? span : span with { Start = start, End = end };
     }
 

@@ -92,6 +92,16 @@ call, plus a streaming overload). `RecognizerResult` has Catalyst.Presidio's sha
   `End + 1` in).
 - `PipelineParityTests.AnalyzeThenCloak*` pins the public flow to the reference: what `CloakAsync` sends
   must equal upstream `guard.protect` on every fixture case and conversation.
+- `Analyze(text, AnalyzeOptions?)` is the one place behaviour may depart from the reference, and only
+  when the caller asks:
+  - `ExpandCapitalizedParticles = false` skips `NerDetector.RescueCapitalizedParticles`.
+  - `Hints` (entity type → values, compiled once into `Detection/HintSet`) adds every hint occurrence the
+    layers missed, with score 1, overriding the keep-set. It also extends spans over hint words in the
+    repair loop (`ExtendOverHintWords`): a leftward pass first, then a rightward one, with the name
+    types sharing words.
+  
+  Default options must stay byte-identical to the reference (`AnalyzeOptionsTests.DefaultOptionsAreTheReference`).
+  `ChatGuard`, the parity tests and `Detect(string)` use the defaults.
 
 ## The port is defined by parity — keep it that way
 
