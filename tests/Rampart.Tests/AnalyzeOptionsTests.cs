@@ -14,7 +14,11 @@ public sealed class AnalyzeOptionsTests
         => [.. Analyzer.Analyze(text, options).Select(r => $"{r.EntityType}={text.Substring(r.Start, r.Length)}")];
 
     private static AnalyzeOptions Hints(bool particles, params (string Type, string[] Values)[] hints)
-        => new() { ExpandCapitalizedParticles = particles, Hints = hints.ToDictionary(h => h.Type, h => h.Values) };
+    {
+        var options = new AnalyzeOptions().WithCapitalizedParticles(particles);
+        foreach (var (type, values) in hints) options.AddHint(type, values);
+        return options;
+    }
 
     public static TheoryData<string> Cases() => ReferenceFixture.CaseIds();
 
@@ -29,7 +33,7 @@ public sealed class AnalyzeOptionsTests
     [Fact]
     public void ParticleRescueCanBeTurnedOff()
     {
-        var off = new AnalyzeOptions { ExpandCapitalizedParticles = false };
+        var off = new AnalyzeOptions().WithCapitalizedParticles(false);
         Assert.Equal(["GIVEN_NAME=I'm Alex", "SURNAME=Rivera"], Found("Hi, I'm Alex Rivera."));
         Assert.Equal(["GIVEN_NAME=Alex", "SURNAME=Rivera"], Found("Hi, I'm Alex Rivera.", off));
         Assert.Equal(["GIVEN_NAME=Maria", "SURNAME=Lopez", "PHONE=(202) 555-0188"], Found("Call Maria Lopez at (202) 555-0188.", off));
@@ -41,7 +45,7 @@ public sealed class AnalyzeOptionsTests
         const string text = "Juan De La Vega Ruiz signed.";
         Assert.Equal(["GIVEN_NAME=Juan De La", "SURNAME=Vega Ruiz"], Found(text));
         // The rescue is what covered "De La Vega": off, they are left in the text.
-        Assert.Equal(["GIVEN_NAME=Juan", "SURNAME=Ruiz"], Found(text, new AnalyzeOptions { ExpandCapitalizedParticles = false }));
+        Assert.Equal(["GIVEN_NAME=Juan", "SURNAME=Ruiz"], Found(text, new AnalyzeOptions().WithCapitalizedParticles(false)));
         // The hint's words extend the surname leftwards over them, rather than the given name rightwards.
         Assert.Equal(["GIVEN_NAME=Juan", "SURNAME=De La Vega Ruiz"], Found(text, Hints(false, ("GIVEN_NAME", ["Juan De La Vega Ruiz"]))));
         // The words expand a span even where the whole hint does not occur (another member of the family).
@@ -58,8 +62,8 @@ public sealed class AnalyzeOptionsTests
         var sender = Hints(true, ("GIVEN_NAME", ["Alex"]), ("SURNAME", ["Rivera"]));
         Assert.Equal(["GIVEN_NAME=alex", "SURNAME=rivera"], Found(text, sender));
         Assert.All(Analyzer.Analyze(text, sender), r => Assert.Equal(1f, r.Score));
-        var caseSensitive = new AnalyzeOptions { Hints = sender.Hints, HintsIgnoreCase = false };
-        Assert.Empty(Found(text, caseSensitive));
+        Assert.Empty(Found(text, sender.WithHintsIgnoringCase(false)));
+        Assert.Equal(["GIVEN_NAME=alex", "SURNAME=rivera"], Found(text, sender.WithHintsIgnoringCase(true)));
     }
 
     [Fact]
@@ -90,14 +94,58 @@ public sealed class AnalyzeOptionsTests
     }
 
     [Fact]
-    public void UnknownEntityTypeThrows()
-        => Assert.Throws<ArgumentException>(() => Analyzer.Analyze("Hello.", Hints(true, ("PERSON", ["John"]))));
+    public void UnknownEntityTypeThrowsWhenAdded()
+        => Assert.Throws<ArgumentException>(() => new AnalyzeOptions().AddHint("PERSON", "John"));
+
+    [Fact]
+    public void ATypeTakesManyValuesAcrossCalls()
+    {
+        var options = new AnalyzeOptions()
+            .AddHint("GIVEN_NAME", "Alex", "Sam")
+            .AddHint("GIVEN_NAME", "Jordan")
+            .AddHint("GIVEN_NAME", "Alex", " ", null!)   // a repeat, a blank and a null are ignored
+            .AddHint("SURNAME", "Rivera");
+        Assert.Equal(["Alex", "Sam", "Jordan"], options.Hints["GIVEN_NAME"]);
+        Assert.Equal(["Rivera"], options.Hints["SURNAME"]);
+        Assert.Equal(
+            ["GIVEN_NAME=sam", "GIVEN_NAME=alex", "SURNAME=rivera", "GIVEN_NAME=jordan"],
+            Found("ask sam and alex rivera, or jordan.", options));
+    }
+
+    [Fact]
+    public void OverlappingValuesOfATypeAreMergedIntoOneSpan()
+    {
+        var options = new AnalyzeOptions().AddHint("SURNAME", "De La Vega Ruiz", "Vega");
+        Assert.Equal(["SURNAME=de la vega ruiz"], Found("send it to de la vega ruiz.", options));
+    }
+
+    [Fact]
+    public void AddingAHintAfterUseRecompiles()
+    {
+        var options = new AnalyzeOptions().AddHint("GIVEN_NAME", "Alex");
+        Assert.Equal(["GIVEN_NAME=alex"], Found("ask alex or sam.", options));
+        options.AddHint("GIVEN_NAME", "Sam");
+        Assert.Equal(["GIVEN_NAME=alex", "GIVEN_NAME=sam"], Found("ask alex or sam.", options));
+    }
+
+    [Fact]
+    public void NoHintsNoDictionary()
+    {
+        var options = new AnalyzeOptions().WithCapitalizedParticles(false);
+        Assert.False(options.HasHints);
+        Assert.Empty(options.Hints);
+        Assert.Null(options.CompiledHints);
+    }
 }
 
 public sealed class HintSetTests
 {
     private static (int, int, PiiLabel)[] Find(string text, bool ignoreCase, params (string Type, string[] Values)[] hints)
-        => [.. HintSet.Build(hints.ToDictionary(h => h.Type, h => h.Values), ignoreCase).FindOccurrences(text)];
+    {
+        var options = new AnalyzeOptions().WithHintsIgnoringCase(ignoreCase);
+        foreach (var (type, values) in hints) options.AddHint(type, values);
+        return [.. options.CompiledHints!.FindOccurrences(text)];
+    }
 
     [Fact]
     public void SpacingBetweenWordsIsFlexible()

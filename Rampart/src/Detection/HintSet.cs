@@ -4,8 +4,9 @@ using Rampart.Tokenization;
 namespace Rampart.Detection;
 
 /// <summary>
-/// <see cref="AnalyzeOptions.Hints"/>, compiled: the phrases to report wherever they occur, and per
-/// entity type the words that extend a detected span of that type. Not part of the reference.
+/// The hints of an <see cref="AnalyzeOptions"/>, compiled: one phrase per value to report wherever it
+/// occurs, and per entity type the words of all its values, which extend a detected span of that type.
+/// Not part of the reference.
 /// </summary>
 internal sealed class HintSet
 {
@@ -26,14 +27,11 @@ internal sealed class HintSet
         _comparison = ignoreCase ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
     }
 
-    public static HintSet Build(IReadOnlyDictionary<string, string[]> hints, bool ignoreCase)
+    public static HintSet Build(IReadOnlyDictionary<PiiLabel, List<string>> hints, bool ignoreCase)
     {
         var set = new HintSet(ignoreCase);
-        foreach (var (type, values) in hints)
+        foreach (var (label, values) in hints)
         {
-            if (!PiiLabels.TryParse(type, out var label))
-                throw new ArgumentException($"Unknown entity type '{type}' in hints.", nameof(hints));
-            if (values is null) continue;
             foreach (var value in values)
             {
                 if (string.IsNullOrWhiteSpace(value)) continue;

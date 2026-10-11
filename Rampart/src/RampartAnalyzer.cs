@@ -66,7 +66,7 @@ public sealed class RampartAnalyzer
     /// </param>
     public List<RecognizerResult> Analyze(string text, AnalyzeOptions? options = null)
     {
-        var hinted = options?.Hints is null ? null : new List<(int Start, int End, PiiLabel Label)>();
+        var hinted = options is { HasHints: true } ? new List<(int Start, int End, PiiLabel Label)>() : null;
         var results = new List<RecognizerResult>();
         foreach (var span in Policy.MergeSpans(Detect(text, options, hinted)))
         {
@@ -92,7 +92,7 @@ public sealed class RampartAnalyzer
     {
         if (options is null) return Detect(text);
         var hints = options.CompiledHints;
-        var spans = Detect(text, new NerDetector.RepairOptions(!options.ExpandCapitalizedParticles, hints));
+        var spans = Detect(text, new NerDetector.RepairOptions(!options.CapitalizedParticles, hints));
         if (hints is null) return spans;
 
         foreach (var (start, end, label) in hints.FindOccurrences(text))

@@ -173,9 +173,11 @@ anonymizer.Anonymize(text, analyzer.Analyze(text), "replace", replacement: "<PII
 
 ## Per-call options
 
-`Analyze` takes an optional `AnalyzeOptions` for that call. Without it, or with the defaults,
-the result is exactly the original Rampart's. An instance can be reused; its hints are compiled
-once.
+`Analyze` takes an optional `AnalyzeOptions` for that call, configured fluently. Without it, or
+with a fresh `new AnalyzeOptions()`, the result is exactly the original Rampart's.
+
+An instance can be reused across calls and threads; its hints are compiled once, on first use.
+Configure it before sharing it.
 
 ### The capitalized-particle expansion
 
@@ -189,7 +191,7 @@ var text = "Hi, I'm Alex Rivera.";
 anonymizer.Anonymize(text, analyzer.Analyze(text), "replace", replacement: "<PII>");
 // → "Hi, <PII> <PII>."             ("I'm Alex" is one GIVEN_NAME)
 
-var options = new AnalyzeOptions { ExpandCapitalizedParticles = false };
+var options = new AnalyzeOptions().WithCapitalizedParticles(false);
 anonymizer.Anonymize(text, analyzer.Analyze(text, options), "replace", replacement: "<PII>");
 // → "Hi, I'm <PII> <PII>."
 ```
@@ -199,7 +201,7 @@ the model did not tag is then left in the text:
 
 ```csharp
 var text = "Juan De La Vega Ruiz signed.";
-analyzer.Analyze(text, new AnalyzeOptions { ExpandCapitalizedParticles = false });
+analyzer.Analyze(text, new AnalyzeOptions().WithCapitalizedParticles(false));
 // → GIVEN_NAME "Juan", SURNAME "Ruiz"     ("De La Vega" is not reported)
 ```
 
@@ -208,17 +210,12 @@ Hints, below, close that gap for the names you know.
 ### Hints: values to always report
 
 When you know values that must never get through, such as the name of the person sending the
-message, pass them as hints by entity type:
+message, add them as hints by entity type:
 
 ```csharp
-var sender = new AnalyzeOptions
-{
-    Hints = new Dictionary<string, string[]>
-    {
-        ["GIVEN_NAME"] = ["Alex"],
-        ["SURNAME"] = ["Rivera"],
-    },
-};
+var sender = new AnalyzeOptions()
+    .AddHint("GIVEN_NAME", "Alex")
+    .AddHint("SURNAME", "Rivera");
 
 var text = "Ask alex rivera about it, he will know.";
 anonymizer.Anonymize(text, analyzer.Analyze(text), "replace", replacement: "<PII>");
@@ -229,13 +226,18 @@ anonymizer.Anonymize(text, analyzer.Analyze(text, sender), "replace", replacemen
 
 - **Always reported.** Every occurrence of a hinted value is reported as its entity type, with
   score 1. That holds even when the model misses it, and even when the type is in `KeepLabels`.
+- **Several values per type.** A type takes as many values as you like, in one call
+  (`AddHint("GIVEN_NAME", "Alex", "Sam")`) or across several. Repeated values are ignored. Each
+  value is matched on its own. Where two values of a type overlap in the text, as with
+  `"De La Vega Ruiz"` and `"Vega"`, their spans are merged into one.
 - **Whole words.** The value's words must match whole words, with any spacing between them: "Al"
   does not match "Also".
 - **Case.** Matching ignores case by default. For a hint that is also a common word ("Will", "Mark",
-  "May"), set `HintsIgnoreCase = false`.
-- **Unknown types.** An entity type the analyzer does not report throws `ArgumentException`.
+  "May"), call `.WithHintsIgnoringCase(false)`.
+- **Unknown types.** `AddHint` throws `ArgumentException` for an entity type the analyzer does not
+  report.
 
-The words of a type's hints also **expand** spans of that type. A detected span grows over the
+The words of all of a type's hints also **expand** spans of that type. A detected span grows over the
 hinted words right before it, then over the ones right after it. Unlike the capitalized-particle
 expansion, this works for any word length and any case, and it works with that expansion off. The
 two name types share their words, because the model splits one person's name across `GIVEN_NAME`
@@ -243,11 +245,9 @@ and `SURNAME`:
 
 ```csharp
 var text = "Juan De La Vega Ruiz signed.";
-var options = new AnalyzeOptions
-{
-    ExpandCapitalizedParticles = false,
-    Hints = new Dictionary<string, string[]> { ["SURNAME"] = ["De La Vega Ruiz"] },
-};
+var options = new AnalyzeOptions()
+    .WithCapitalizedParticles(false)
+    .AddHint("SURNAME", "De La Vega Ruiz");
 analyzer.Analyze(text, options);
 // → GIVEN_NAME "Juan", SURNAME "De La Vega Ruiz"
 ```

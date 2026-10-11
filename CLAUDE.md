@@ -94,8 +94,10 @@ call, plus a streaming overload). `RecognizerResult` has Catalyst.Presidio's sha
   must equal upstream `guard.protect` on every fixture case and conversation.
 - `Analyze(text, AnalyzeOptions?)` is the one place behaviour may depart from the reference, and only
   when the caller asks:
-  - `ExpandCapitalizedParticles = false` skips `NerDetector.RescueCapitalizedParticles`.
-  - `Hints` (entity type → values, compiled once into `Detection/HintSet`) adds every hint occurrence the
+  - `WithCapitalizedParticles(false)` skips `NerDetector.RescueCapitalizedParticles`.
+  - `AddHint(type, params values)` accumulates values per type in a dictionary allocated on the first
+    hint, and validates the type eagerly. The hints compile lazily into `Detection/HintSet`, and adding
+    one after use invalidates the compiled set. Analysis then adds every hint occurrence the
     layers missed, with score 1, overriding the keep-set. It also extends spans over hint words in the
     repair loop (`ExtendOverHintWords`): a leftward pass first, then a rightward one, with the name
     types sharing words.
